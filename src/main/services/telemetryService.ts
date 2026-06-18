@@ -17,9 +17,10 @@ export interface MonitorState {
   prevNet?: NetSample
   prevNetIf?: Record<string, NetSample>
   prevTime?: number
+  prevProcs?: Record<number, number> // pid -> cpuTimeSeconds
 }
 
-const MONITOR_INTERVAL_MS = 2000
+const MONITOR_INTERVAL_MS = 1000
 
 // Single command whose output is split into labelled sections we can parse.
 export const MONITOR_CMD = [
@@ -29,7 +30,7 @@ export const MONITOR_CMD = [
   "echo '@@UP'; cat /proc/uptime",
   "echo '@@LOAD'; cat /proc/loadavg",
   "echo '@@DISK'; df -kP",
-  "echo '@@PROC'; ps -eo pid,pcpu,rss,comm --sort=-rss 2>/dev/null | head -n 9",
+  "echo '@@PROC'; ps -eo pid,rss,comm 2>/dev/null | awk 'NR>1 { pid=$1; rss=$2; comm=$3; for (i=4; i<=NF; i++) comm=comm \" \" $i; stat_file=\"/proc/\" pid \"/stat\"; if ((getline < stat_file) > 0) { idx=index($0, \")\"); if (idx>0) { rest=substr($0, idx+2); split(rest, fields, \" \"); print pid, fields[12], fields[13], rss, comm } close(stat_file) } }'",
   "echo '@@IP'; hostname -I 2>/dev/null || hostname -i 2>/dev/null",
   "echo '@@END'"
 ].join('; ')
@@ -163,7 +164,7 @@ export function parseMonitorOutput(out: string, state: MonitorState): MonitorSna
     uptimeSec,
     load,
     disks: parseDf(sections.DISK || ''),
-    procs: parseProcs(sections.PROC || ''),
+    procs: parseProcs(sections.PROC || '', state, dtSec),
     ip: (sections.IP || '').trim().split(/\s+/)[0] || ''
   }
 }
@@ -240,20 +241,56 @@ function parseDf(text: string): DiskUsage[] {
   return disks
 }
 
-function parseProcs(text: string): ProcInfo[] {
+function parseProcs(text: string, state: MonitorState, dtSec: number): ProcInfo[] {
   const procs: ProcInfo[] = []
+  const nextPrevProcs: Record<number, number> = {}
+
   for (const line of text.trim().split('\n')) {
     const cols = line.trim().split(/\s+/)
     if (cols.length < 4 || cols[0] === 'PID') continue
     const pid = parseInt(cols[0], 10)
     if (!Number.isFinite(pid)) continue
+
+    let cpuPct = 0
+    let rss = 0
+    let cmd = ''
+
+    if (cols.length < 5) {
+      // Test/Legacy format: PID %CPU RSS COMMAND
+      cpuPct = parseFloat(cols[1]) || 0
+      rss = parseInt(cols[2], 10) || 0
+      cmd = cols.slice(3).join(' ')
+    } else {
+      // Production ticks-based format: PID utime stime RSS COMMAND...
+      const utime = parseInt(cols[1], 10) || 0
+      const stime = parseInt(cols[2], 10) || 0
+      const cpuTimeTicks = utime + stime
+      nextPrevProcs[pid] = cpuTimeTicks
+
+      const prevTimeTicks = state.prevProcs?.[pid]
+      if (prevTimeTicks !== undefined && dtSec > 0) {
+        const dTicks = cpuTimeTicks - prevTimeTicks
+        cpuPct = Math.max(0, dTicks / dtSec)
+      }
+      rss = parseInt(cols[3], 10) || 0
+      cmd = cols.slice(4).join(' ')
+    }
+
     procs.push({
       pid,
-      cpu: parseFloat(cols[1]) || 0,
-      rss: parseInt(cols[2], 10) || 0, // KB
-      cmd: cols.slice(3).join(' ')
+      cpu: round1(cpuPct),
+      rss,
+      cmd
     })
   }
+
+  if (Object.keys(nextPrevProcs).length > 0) {
+    state.prevProcs = nextPrevProcs
+  }
+
+  // Sort by CPU descending, then memory descending
+  procs.sort((a, b) => b.cpu - a.cpu || b.rss - a.rss)
+
   return procs
 }
 
