@@ -4,6 +4,7 @@ import type { FullHost } from './store'
 import type { SftpEntry } from '@shared/types'
 import { startMonitor, fetchSysInfo, type CpuSample, type NetSample } from './services/telemetryService'
 import * as sftpService from './services/sftpService'
+import { logger } from './services/logger'
 
 export type Sender = (channel: string, payload: unknown) => void
 
@@ -28,38 +29,48 @@ export class SSHManager {
   constructor(private send: Sender) {}
 
   open(id: string, host: FullHost): void {
+    logger.info('SSH', `正在尝试连接远程主机: ${host.host}:${host.port} (会话ID: ${id}, 用户名: ${host.username})`)
     const client = new Client()
     const session: Session = { id, client }
     this.sessions.set(id, session)
     this.send('session:status', { id, status: 'connecting' })
 
     client.on('ready', () => {
+      logger.info('SSH', `与远程主机 ${host.host}:${host.port} 的连接已成功建立 (会话ID: ${id})`)
       this.send('session:status', { id, status: 'connected' })
       client.shell({ term: 'xterm-256color' }, (err, stream) => {
         if (err) {
+          logger.error('SSH', `启动 Shell 失败 (会话ID: ${id})`, err)
           this.send('session:status', { id, status: 'error', message: err.message })
           return
         }
+        logger.info('SSH', `Shell 通道已成功创建 (会话ID: ${id})`)
         session.shell = stream
         stream.on('data', (d: Buffer) => this.send('session:data', { id, data: d.toString('utf8') }))
         stream.stderr.on('data', (d: Buffer) =>
           this.send('session:data', { id, data: d.toString('utf8') })
         )
-        stream.on('close', () => this.close(id))
+        stream.on('close', () => {
+          logger.info('SSH', `Shell 流通道已关闭 (会话ID: ${id})`)
+          this.close(id)
+        })
       })
       startMonitor(session, this.send)
       fetchSysInfo(session, this.send)
     })
 
-    client.on('keyboard-interactive', (_name, _instr, _lang, prompts, finish) => {
+    client.on('keyboard-interactive', (name, instr, _lang, prompts, finish) => {
+      logger.info('SSH', `触发键盘交互式验证提示 (会话ID: ${id}, 名称: ${name}, 提示语: ${instr})`)
       finish(prompts.map(() => host.password ?? ''))
     })
 
     client.on('error', (err) => {
+      logger.error('SSH', `连接发生错误 (会话ID: ${id})`, err)
       this.send('session:status', { id, status: 'error', message: err.message })
     })
 
     client.on('close', () => {
+      logger.info('SSH', `SSH 连接已完全关闭 (会话ID: ${id})`)
       this.send('session:status', { id, status: 'closed' })
       this.cleanup(id)
     })
@@ -67,6 +78,7 @@ export class SSHManager {
     try {
       client.connect(this.buildConfig(host))
     } catch (e) {
+      logger.error('SSH', `调用 client.connect 时抛出异常 (会话ID: ${id})`, e)
       this.send('session:status', {
         id,
         status: 'error',
@@ -102,8 +114,12 @@ export class SSHManager {
   }
 
   close(id: string): void {
+    logger.info('SSH', `收到关闭会话的请求 (会话ID: ${id})`)
     const s = this.sessions.get(id)
-    if (!s) return
+    if (!s) {
+      logger.warn('SSH', `未找到要关闭的会话 (会话ID: ${id})`)
+      return
+    }
     try {
       s.shell?.end()
     } catch {
@@ -170,9 +186,13 @@ export class SSHManager {
   }
 
   private cleanup(id: string): void {
+    logger.info('SSH', `正在执行会话资源清理 (会话ID: ${id})`)
     const s = this.sessions.get(id)
     if (!s) return
-    if (s.monitorTimer) clearInterval(s.monitorTimer)
+    if (s.monitorTimer) {
+      logger.info('SSH', `停止系统监控轮询定时器 (会话ID: ${id})`)
+      clearInterval(s.monitorTimer)
+    }
     try {
       s.sftp?.end()
     } catch {
@@ -180,5 +200,6 @@ export class SSHManager {
     }
     sftpService.sftpCancelSession(id)
     this.sessions.delete(id)
+    logger.info('SSH', `会话资源清理完成，已从活动会话列表中移除 (会话ID: ${id})`)
   }
 }

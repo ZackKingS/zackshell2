@@ -1,6 +1,7 @@
 import { appendFileSync, promises as fsPromises } from 'fs'
 import { join } from 'path'
 import { SFTPWrapper } from 'ssh2'
+import { logger } from './logger'
 import type { SftpEntry } from '@shared/types'
 import type { Session, Sender } from '../sshManager'
 
@@ -182,6 +183,7 @@ class TransferQueueManager {
         dirTask.fileProgresses.set(task.id, { transferred: 0, total: 0, done: false })
       }
     }
+    logger.info('SFTP', `添加传输任务: [${task.direction === 'upload' ? '上传' : '下载'}] 远程: ${task.remotePath} 本地: ${task.localPath} (任务ID: ${task.id})`)
     this.queue.push(task)
     this.schedule()
   }
@@ -189,6 +191,7 @@ class TransferQueueManager {
   cancel(sessionId: string, transferId: string) {
     const dirTask = this.directoryTasks.get(transferId)
     if (dirTask) {
+      logger.info('SFTP', `取消目录传输任务: sessionId=${sessionId}, transferId=${transferId}`)
       const childTasks = this.queue.filter((t) => t.parentId === transferId && t.sessionId === sessionId)
       for (const child of childTasks) {
         this.cancel(sessionId, child.id)
@@ -200,6 +203,8 @@ class TransferQueueManager {
 
     const task = this.queue.find((t) => t.id === transferId && t.sessionId === sessionId)
     if (!task) return
+
+    logger.info('SFTP', `取消单个文件传输任务: sessionId=${sessionId}, transferId=${transferId}, 文件名=${task.filename}, 状态=${task.status}`)
 
     if (task.status === 'queued') {
       task.status = 'cancelled'
@@ -253,9 +258,11 @@ class TransferQueueManager {
 
   private runTask(task: TransferTask) {
     task.status = 'running'
+    logger.info('SFTP', `启动传输任务: [${task.direction === 'upload' ? '上传' : '下载'}] 文件名: ${task.filename}, 远程: ${task.remotePath}, 本地: ${task.localPath} (任务ID: ${task.id})`)
 
     task.client.sftp((err: any, sftp: SFTPWrapper) => {
       if (task.status === 'cancelled') {
+        logger.info('SFTP', `任务已被取消(SFTP初始化前): [${task.direction === 'upload' ? '上传' : '下载'}] ${task.filename}`)
         sftp?.end()
         this.activeCount--
         this.remove(task.id)
@@ -265,6 +272,7 @@ class TransferQueueManager {
       }
 
       if (err) {
+        logger.error('SFTP', `传输通道打开失败: [${task.direction === 'upload' ? '上传' : '下载'}] ${task.filename}`, err)
         task.status = 'failed'
         task.error = err.message
         task.send('sftp:progress', {
@@ -324,6 +332,7 @@ class TransferQueueManager {
         this.remove(task.id)
 
         if (task.status === 'cancelled') {
+          logger.info('SFTP', `传输任务已取消: [${task.direction === 'upload' ? '上传' : '下载'}] ${task.filename}`)
           task.send('sftp:progress', {
             sessionId: task.sessionId,
             transferId: task.id,
@@ -340,6 +349,7 @@ class TransferQueueManager {
         }
 
         if (transferErr) {
+          logger.error('SFTP', `文件传输失败: [${task.direction === 'upload' ? '上传' : '下载'}] ${task.filename}`, transferErr)
           task.status = 'failed'
           task.error = transferErr.message
           task.send('sftp:progress', {
@@ -354,6 +364,7 @@ class TransferQueueManager {
           })
           this.handleFileEnd(task, 'failed', transferErr.message)
         } else {
+          logger.info('SFTP', `文件传输完成: [${task.direction === 'upload' ? '上传' : '下载'}] ${task.filename}`)
           task.status = 'completed'
           task.send('sftp:progress', {
             sessionId: task.sessionId,
@@ -382,16 +393,12 @@ class TransferQueueManager {
 export const transferQueue = new TransferQueueManager()
 
 export function logToFile(level: 'INFO' | 'ERROR' | 'WARN', msg: string, err?: any): void {
-  try {
-    const logPath = join(process.cwd(), 'sftp_upload.log')
-    const time = new Date().toISOString()
-    let errStr = ''
-    if (err) {
-      errStr = ' | Error: ' + (err instanceof Error ? err.stack || err.message : JSON.stringify(err))
-    }
-    appendFileSync(logPath, `[${time}] [${level}] ${msg}${errStr}\n`, 'utf8')
-  } catch (e) {
-    // ignore
+  if (level === 'ERROR') {
+    logger.error('SFTP', msg, err)
+  } else if (level === 'WARN') {
+    logger.warn('SFTP', msg, err)
+  } else {
+    logger.info('SFTP', msg)
   }
 }
 
@@ -516,16 +523,13 @@ async function walkDirectoryAndQueue(
 ): Promise<void> {
   const id = session.id
   const logInfo = (msg: string) => {
-    console.log(msg)
-    logToFile('INFO', msg)
+    logger.info('SFTP', msg)
   }
   const logWarn = (msg: string, errMessage: string) => {
-    console.warn(msg + ' : ' + errMessage)
-    logToFile('WARN', msg + ' : ' + errMessage)
+    logger.warn('SFTP', `${msg} : ${errMessage}`)
   }
   const logError = (msg: string, err: any) => {
-    console.error(msg, err)
-    logToFile('ERROR', msg, err)
+    logger.error('SFTP', msg, err)
   }
 
   logInfo(`[SFTP Upload] Starting recursive async walk: ${localPath} -> ${remotePath}`)

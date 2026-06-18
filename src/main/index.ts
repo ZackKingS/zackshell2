@@ -1,13 +1,15 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'path'
-import { SSHManager, logToFile } from './sshManager'
+import { SSHManager } from './sshManager'
 import { hostStore } from './store'
 import type { HostInput } from '@shared/types'
+import { logger } from './services/logger'
 
 let mainWindow: BrowserWindow | null = null
 let ssh: SSHManager
 
 function createWindow(): void {
+  logger.info('App', '开始创建应用主窗口 BrowserWindow')
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -24,17 +26,24 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('ready-to-show', () => {
+    logger.info('App', '主窗口已就绪，正在显示主窗口')
+    mainWindow?.show()
+  })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    logger.info('App', `拦截到窗口打开请求，通过外部浏览器打开 URL: ${url}`)
     shell.openExternal(url)
     return { action: 'deny' }
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
+    logger.info('App', `加载开发服务器 URL: ${process.env.ELECTRON_RENDERER_URL}`)
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    const htmlPath = join(__dirname, '../renderer/index.html')
+    logger.info('App', `加载生产 HTML 文件: ${htmlPath}`)
+    mainWindow.loadFile(htmlPath)
   }
 }
 
@@ -43,6 +52,7 @@ function send(channel: string, payload: unknown): void {
 }
 
 function registerIpc(): void {
+  logger.info('App', '开始注册 IPC 路由监听器')
   ipcMain.handle('hosts:list', () => hostStore.list())
   ipcMain.handle('hosts:save', (_e, input: HostInput) => hostStore.save(input))
   ipcMain.handle('hosts:delete', (_e, id: string) => hostStore.remove(id))
@@ -95,23 +105,38 @@ function registerIpc(): void {
     ssh.sftpCancel(id, transferId)
   })
   ipcMain.on('sftp:log', (_e, level: 'INFO' | 'ERROR' | 'WARN', message: string) => {
-    logToFile(level, message)
+    if (level === 'ERROR') {
+      logger.error('Renderer', message)
+    } else if (level === 'WARN') {
+      logger.warn('Renderer', message)
+    } else {
+      logger.info('Renderer', message)
+    }
   })
 }
 
 app.whenReady().then(() => {
+  logger.info('App', 'Electron 应用 ready 事件触发，初始化主进程服务')
   ssh = new SSHManager(send)
   registerIpc()
   createWindow()
 
   app.on('activate', () => {
+    logger.info('App', 'Electron activate 事件触发')
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
 app.on('window-all-closed', () => {
+  logger.info('App', '所有窗口已关闭 (window-all-closed)')
   ssh?.closeAll()
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin') {
+    logger.info('App', '非 macOS 平台下窗口全关，退出应用')
+    app.quit()
+  }
 })
 
-app.on('before-quit', () => ssh?.closeAll())
+app.on('before-quit', () => {
+  logger.info('App', '应用准备退出 (before-quit)，开始关闭所有 SSH 会话')
+  ssh?.closeAll()
+})

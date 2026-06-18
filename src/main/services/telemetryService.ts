@@ -1,5 +1,6 @@
 import type { MonitorSnapshot, ProcInfo, DiskUsage, NetIf, SysInfo } from '@shared/types'
 import type { Session, Sender } from '../sshManager'
+import { logger } from './logger'
 
 export interface CpuSample {
   total: number
@@ -46,6 +47,7 @@ export const SYSINFO_CMD = [
 ].join('; ')
 
 export function startMonitor(session: Session, send: Sender): void {
+  logger.info('Telemetry', `已启动系统监控轮询服务，会话ID: ${session.id}`)
   const sample = (): void => {
     const t0 = Date.now()
     // Guard: skip this tick if the previous exec is still running
@@ -54,6 +56,7 @@ export function startMonitor(session: Session, send: Sender): void {
 
     session.client.exec(MONITOR_CMD, (err, stream) => {
       if (err) {
+        logger.error('Telemetry', `执行监控命令 exec 出错，会话ID: ${session.id}`, err)
         ;(session as any)._monBusy = false
         return
       }
@@ -64,6 +67,7 @@ export function startMonitor(session: Session, send: Sender): void {
 
       // Safety timeout: 8 s — force-close the channel if the server hangs
       const timer = setTimeout(() => {
+        logger.warn('Telemetry', `监控通道超时(8秒无响应)，强制销毁通道，会话ID: ${session.id}`)
         try { stream.destroy() } catch { /* ignore */ }
         ;(session as any)._monBusy = false
       }, 8000)
@@ -84,14 +88,19 @@ export function startMonitor(session: Session, send: Sender): void {
 }
 
 export function fetchSysInfo(session: Session, send: Sender): void {
+  logger.info('Telemetry', `开始获取系统静态宿主机信息，会话ID: ${session.id}`)
   session.client.exec(SYSINFO_CMD, (err, stream) => {
-    if (err) return
+    if (err) {
+      logger.error('Telemetry', `执行获取系统静态宿主机信息命令 exec 失败，会话ID: ${session.id}`, err)
+      return
+    }
     let out = ''
     stream.stderr.resume()
     stream.on('data', (d: Buffer) => (out += d.toString('utf8')))
-    stream.on('close', () =>
+    stream.on('close', () => {
+      logger.info('Telemetry', `成功获取系统静态宿主机信息，会话ID: ${session.id}`)
       send('monitor:sysinfo', { id: session.id, info: parseSysInfo(out) })
-    )
+    })
   })
 }
 
