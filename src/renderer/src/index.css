@@ -263,126 +263,255 @@ button {
   color: var(--text);
 }
 
-/* ---------- Monitor ---------- */
+/* ---------- Monitor (light, FinalShell-style) ---------- */
 .monitor {
-  width: 258px;
+  width: 268px;
   flex-shrink: 0;
-  background: var(--panel);
-  border-right: 1px solid var(--border);
-  padding: 10px;
+  background: #f4f5f7;
+  color: #333;
+  border-right: 1px solid #c9ccd1;
+  padding: 8px 10px;
   overflow-y: auto;
+  font-size: 12px;
 }
 .monitor-empty {
-  color: var(--text-dim);
+  color: #888;
   padding: 20px 4px;
   text-align: center;
 }
 
-.m-section {
-  margin-bottom: 12px;
-}
-.m-title {
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-bottom: 5px;
-}
-
-.info-row {
+.fs-ip {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
-  padding: 2px 0;
+  align-items: center;
+  padding: 2px 0 6px;
 }
-.info-label {
-  color: var(--text-dim);
+.fs-ip b {
+  font-weight: 600;
+}
+.fs-copy {
+  color: #3a7bd5;
+  cursor: pointer;
+  font-size: 11px;
+}
+.fs-copy:hover {
+  text-decoration: underline;
 }
 
-.gauge {
+.fs-sysbtn {
+  width: 100%;
+  background: linear-gradient(#fdfdfd, #eef0f2);
+  border: 1px solid #c4c7cc;
+  border-radius: 3px;
+  color: #333;
+  padding: 5px 0;
+  font-size: 12px;
   margin-bottom: 8px;
 }
-.gauge-head {
+.fs-sysbtn:hover {
+  background: linear-gradient(#ffffff, #e6e8ea);
+}
+
+.fs-meta {
+  color: #555;
+  line-height: 1.7;
+  margin-bottom: 8px;
+}
+
+.fs-gauge {
   display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  margin-bottom: 3px;
-}
-.gauge-label {
-  color: var(--text-dim);
-}
-
-.bar {
-  height: 8px;
-  background: var(--bg-3);
-  border-radius: 4px;
-  overflow: hidden;
-}
-.bar.mini {
-  height: 5px;
-}
-.bar-fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 4px;
-  transition: width 0.3s ease;
-}
-
-.spark {
-  width: 100%;
-  height: 36px;
-  margin: -2px 0 12px;
-  display: block;
-}
-
-.net-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-}
-.net-row .up {
-  color: #e0a458;
-}
-.net-row .down {
-  color: var(--accent);
-}
-
-.proc-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11px;
-}
-.proc-table td {
-  padding: 2px 0;
-  border-bottom: 1px solid var(--bg-3);
-}
-.proc-cmd {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 130px;
-}
-.proc-num {
-  text-align: right;
-  color: var(--text-dim);
-  width: 42px;
-}
-
-.disk-row {
+  align-items: center;
+  gap: 6px;
   margin-bottom: 6px;
 }
-.disk-head {
-  display: flex;
-  justify-content: space-between;
+.fs-gauge .g-label {
+  width: 32px;
+  color: #555;
+  flex-shrink: 0;
+}
+.fs-gauge .g-bar {
+  position: relative;
+  flex: 1;
+  height: 16px;
+  background: #e4e6e9;
+  border: 1px solid #d2d5d9;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.fs-gauge .g-fill {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+.fs-gauge .g-overlay {
+  position: absolute;
+  left: 5px;
+  top: 0;
+  line-height: 16px;
   font-size: 11px;
-  margin-bottom: 3px;
+  color: #4a4a4a;
 }
-.disk-size {
-  color: var(--text-dim);
+.fs-gauge .g-value {
+  width: 86px;
+  text-align: right;
+  color: #888;
+  flex-shrink: 0;
 }
-.disk-mount {
+
+/* process table */
+.fs-proc {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6px 0 10px;
+  font-size: 11px;
+}
+.fs-proc thead th {
+  background: #4a90d9;
+  color: #fff;
+  font-weight: 600;
+  text-align: left;
+  padding: 3px 6px;
+}
+.fs-proc thead th:first-child {
+  width: 52px;
+}
+.fs-proc thead th:nth-child(2) {
+  width: 34px;
+}
+.fs-proc tbody td {
+  padding: 2px 6px;
+  border-bottom: 1px solid #e3e5e8;
+  color: #444;
+}
+.fs-proc tbody tr:nth-child(even) {
+  background: #eceef1;
+}
+.fs-proc td.cmd {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 130px;
+  max-width: 120px;
+}
+
+/* network / ping graphs */
+.fs-net-head,
+.fs-ping-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.fs-net-head .up {
+  color: #d05a5a;
+}
+.fs-net-head .down {
+  color: #3f9a3f;
+}
+.fs-net-head select {
+  margin-left: auto;
+  background: #fff;
+  border: 1px solid #c4c7cc;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #333;
+  padding: 1px 2px;
+}
+.fs-ping-head .muted {
+  margin-left: auto;
+  color: #3a7bd5;
+}
+
+.fs-graph {
+  display: flex;
+  gap: 4px;
+  margin: 3px 0 10px;
+}
+.fs-yaxis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 42px;
+  font-size: 10px;
+  color: #999;
+  text-align: right;
+}
+.fs-svg {
+  flex: 1;
+  height: 58px;
+  background: #fafbfc;
+  border: 1px solid #e3e5e8;
+}
+
+/* disk table */
+.fs-disk {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 4px;
+  font-size: 11px;
+}
+.fs-disk thead th {
+  background: #eceef1;
+  color: #555;
+  font-weight: 600;
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid #d2d5d9;
+}
+.fs-disk th.r,
+.fs-disk td.r {
+  text-align: right;
+}
+.fs-disk tbody td {
+  padding: 3px 6px;
+  border-bottom: 1px solid #e3e5e8;
+  color: #444;
+}
+.fs-disk td.mount {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+.fs-disk td.r {
+  white-space: nowrap;
+}
+.fs-disk .size {
+  color: #666;
+  margin-right: 4px;
+}
+.fs-disk .usebar {
+  display: inline-block;
+  width: 36px;
+  height: 7px;
+  background: #e4e6e9;
+  border: 1px solid #d2d5d9;
+  vertical-align: middle;
+  overflow: hidden;
+}
+.fs-disk .usefill {
+  display: block;
+  height: 100%;
+  background: #7ec97e;
+}
+
+/* sysinfo modal */
+.sysinfo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.sysinfo-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.sysinfo-table td.k {
+  color: var(--text-dim);
+  width: 90px;
+  white-space: nowrap;
+}
+.sysinfo-table td.v {
+  color: var(--text);
+  word-break: break-all;
 }
 
 /* ---------- Terminal ---------- */

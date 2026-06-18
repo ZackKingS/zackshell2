@@ -61,6 +61,7 @@ client.on('ready', async () => {
     )
     console.log(`   运行 ${Math.floor(snap.uptimeSec / 86400)}天  负载 ${snap.load.join(', ')}`)
     console.log(`   网络 ↑${snap.net.tx}B/s ↓${snap.net.rx}B/s   IP ${snap.ip}`)
+    console.log('   网卡: ' + snap.interfaces.map((i) => `${i.name}(↑${i.tx} ↓${i.rx})`).join(', '))
     console.log(`   磁盘 ${snap.disks.length} 个挂载点, 进程 ${snap.procs.length} 个`)
     console.log('   TOP 进程: ' + snap.procs.slice(0, 3).map((p) => p.cmd).join(', '))
     console.log('   磁盘示例: ' + snap.disks.slice(0, 3).map((d) => `${d.mount}(${d.usePct}%)`).join(', '))

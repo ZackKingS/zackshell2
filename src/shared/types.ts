@@ -47,6 +47,7 @@ export interface SessionDataEvent {
 export interface DiskUsage {
   mount: string
   used: number // KB
+  avail: number // KB
   size: number // KB
   usePct: number
 }
@@ -54,8 +55,15 @@ export interface DiskUsage {
 export interface ProcInfo {
   pid: number
   cpu: number // percent
-  mem: number // percent
+  rss: number // KB resident memory
   cmd: string
+}
+
+/** Per-interface throughput (bytes/sec). */
+export interface NetIf {
+  name: string
+  rx: number
+  tx: number
 }
 
 /** One sampling of remote system metrics. */
@@ -63,7 +71,9 @@ export interface MonitorSnapshot {
   cpu: number // 0-100
   mem: { used: number; total: number } // MB
   swap: { used: number; total: number } // MB
-  net: { rx: number; tx: number } // bytes/sec
+  net: { rx: number; tx: number } // aggregate bytes/sec
+  interfaces: NetIf[]
+  rttMs: number // sample round-trip latency to the host
   uptimeSec: number
   load: [number, number, number]
   disks: DiskUsage[]
@@ -74,4 +84,18 @@ export interface MonitorSnapshot {
 export interface MonitorEvent {
   id: string
   snapshot: MonitorSnapshot
+}
+
+/** Static host details, fetched once per connection. */
+export interface SysInfo {
+  hostname: string
+  os: string
+  kernel: string
+  cpuModel: string
+  cores: number
+}
+
+export interface SysInfoEvent {
+  id: string
+  info: SysInfo
 }

@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs'
 import { Client, type ClientChannel } from 'ssh2'
 import type { FullHost } from './store'
-import type { MonitorSnapshot, ProcInfo, DiskUsage } from '@shared/types'
+import type { MonitorSnapshot, ProcInfo, DiskUsage, NetIf, SysInfo } from '@shared/types'
 
 type Sender = (channel: string, payload: unknown) => void
 
@@ -18,6 +18,7 @@ export interface NetSample {
 export interface MonitorState {
   prevCpu?: CpuSample
   prevNet?: NetSample
+  prevNetIf?: Record<string, NetSample>
   prevTime?: number
 }
 
@@ -28,6 +29,7 @@ interface Session {
   monitorTimer?: ReturnType<typeof setInterval>
   prevCpu?: CpuSample
   prevNet?: NetSample
+  prevNetIf?: Record<string, NetSample>
   prevTime?: number
 }
 
@@ -41,8 +43,18 @@ export const MONITOR_CMD = [
   "echo '@@UP'; cat /proc/uptime",
   "echo '@@LOAD'; cat /proc/loadavg",
   "echo '@@DISK'; df -kP",
-  "echo '@@PROC'; ps -eo pid,pcpu,pmem,comm --sort=-pmem 2>/dev/null | head -n 9",
+  "echo '@@PROC'; ps -eo pid,pcpu,rss,comm --sort=-rss 2>/dev/null | head -n 9",
   "echo '@@IP'; hostname -I 2>/dev/null || hostname -i 2>/dev/null",
+  "echo '@@END'"
+].join('; ')
+
+// Static host details, fetched once per connection.
+const SYSINFO_CMD = [
+  "echo '@@HOST'; hostname",
+  "echo '@@OS'; (. /etc/os-release 2>/dev/null && echo \"$PRETTY_NAME\")",
+  "echo '@@KERNEL'; uname -sr",
+  "echo '@@CPU'; grep -m1 'model name' /proc/cpuinfo | cut -d: -f2",
+  "echo '@@CORES'; nproc 2>/dev/null",
   "echo '@@END'"
 ].join('; ')
 
@@ -72,6 +84,7 @@ export class SSHManager {
         stream.on('close', () => this.close(id))
       })
       this.startMonitor(session)
+      this.fetchSysInfo(session)
     })
 
     client.on('keyboard-interactive', (_name, _instr, _lang, prompts, finish) => {
@@ -154,13 +167,17 @@ export class SSHManager {
 
   private startMonitor(session: Session): void {
     const sample = (): void => {
+      const t0 = Date.now()
       session.client.exec(MONITOR_CMD, (err, stream) => {
         if (err) return
         let out = ''
         stream.on('data', (d: Buffer) => (out += d.toString('utf8')))
         stream.on('close', () => {
-          const snapshot = this.parseMonitor(out, session)
-          if (snapshot) this.send('monitor:data', { id: session.id, snapshot })
+          const snapshot = parseMonitorOutput(out, session)
+          if (snapshot) {
+            snapshot.rttMs = Date.now() - t0
+            this.send('monitor:data', { id: session.id, snapshot })
+          }
         })
       })
     }
@@ -168,8 +185,15 @@ export class SSHManager {
     session.monitorTimer = setInterval(sample, MONITOR_INTERVAL_MS)
   }
 
-  private parseMonitor(out: string, session: Session): MonitorSnapshot | null {
-    return parseMonitorOutput(out, session)
+  private fetchSysInfo(session: Session): void {
+    session.client.exec(SYSINFO_CMD, (err, stream) => {
+      if (err) return
+      let out = ''
+      stream.on('data', (d: Buffer) => (out += d.toString('utf8')))
+      stream.on('close', () =>
+        this.send('monitor:sysinfo', { id: session.id, info: parseSysInfo(out) })
+      )
+    })
   }
 }
 
@@ -198,15 +222,33 @@ export function parseMonitorOutput(out: string, state: MonitorState): MonitorSna
   // --- MEM / SWAP ---
   const mem = parseMeminfo(sections.MEM || '')
 
-  // --- NET (sum non-loopback interfaces) ---
-  const net = parseNetDev(sections.NET || '')
-  let rxRate = 0
-  let txRate = 0
-  if (state.prevNet && dtSec > 0) {
-    rxRate = Math.max((net.rx - state.prevNet.rx) / dtSec, 0)
-    txRate = Math.max((net.tx - state.prevNet.tx) / dtSec, 0)
+  // --- NET (per non-loopback interface + aggregate) ---
+  const raw = parseNetDev(sections.NET || '') // cumulative byte counters per iface
+  const interfaces: NetIf[] = []
+  const nextPrevIf: Record<string, NetSample> = {}
+  let aggCumRx = 0
+  let aggCumTx = 0
+  for (const ni of raw) {
+    aggCumRx += ni.rx
+    aggCumTx += ni.tx
+    nextPrevIf[ni.name] = { rx: ni.rx, tx: ni.tx }
+    const prev = state.prevNetIf?.[ni.name]
+    let rx = 0
+    let tx = 0
+    if (prev && dtSec > 0) {
+      rx = Math.max((ni.rx - prev.rx) / dtSec, 0)
+      tx = Math.max((ni.tx - prev.tx) / dtSec, 0)
+    }
+    interfaces.push({ name: ni.name, rx: Math.round(rx), tx: Math.round(tx) })
   }
-  state.prevNet = net
+  let aggRx = 0
+  let aggTx = 0
+  if (state.prevNet && dtSec > 0) {
+    aggRx = Math.max((aggCumRx - state.prevNet.rx) / dtSec, 0)
+    aggTx = Math.max((aggCumTx - state.prevNet.tx) / dtSec, 0)
+  }
+  state.prevNet = { rx: aggCumRx, tx: aggCumTx }
+  state.prevNetIf = nextPrevIf
   state.prevTime = now
 
   // --- UPTIME / LOAD ---
@@ -218,7 +260,9 @@ export function parseMonitorOutput(out: string, state: MonitorState): MonitorSna
     cpu: round1(cpuPct),
     mem: mem.ram,
     swap: mem.swap,
-    net: { rx: Math.round(rxRate), tx: Math.round(txRate) },
+    net: { rx: Math.round(aggRx), tx: Math.round(aggTx) },
+    interfaces,
+    rttMs: 0,
     uptimeSec,
     load,
     disks: parseDf(sections.DISK || ''),
@@ -263,18 +307,17 @@ function parseMeminfo(text: string): {
   }
 }
 
-function parseNetDev(text: string): NetSample {
-  let rx = 0
-  let tx = 0
+/** Cumulative byte counters per non-loopback interface. */
+function parseNetDev(text: string): { name: string; rx: number; tx: number }[] {
+  const ifaces: { name: string; rx: number; tx: number }[] = []
   for (const line of text.split('\n')) {
     const m = line.match(/^\s*([\w.-]+):\s*(.*)$/)
     if (!m) continue
     if (m[1] === 'lo') continue
     const cols = m[2].trim().split(/\s+/).map(Number)
-    rx += cols[0] || 0 // received bytes
-    tx += cols[8] || 0 // transmitted bytes
+    ifaces.push({ name: m[1], rx: cols[0] || 0, tx: cols[8] || 0 })
   }
-  return { rx, tx }
+  return ifaces
 }
 
 function parseDf(text: string): DiskUsage[] {
@@ -285,10 +328,17 @@ function parseDf(text: string): DiskUsage[] {
     if (cols.length < 6 || cols[0] === 'Filesystem') continue
     const size = parseInt(cols[1], 10)
     const used = parseInt(cols[2], 10)
+    const avail = parseInt(cols[3], 10)
     const usePct = parseInt(cols[4], 10)
     const mount = cols.slice(5).join(' ')
     if (!Number.isFinite(size) || size <= 0) continue
-    disks.push({ mount, used, size, usePct: Number.isFinite(usePct) ? usePct : 0 })
+    disks.push({
+      mount,
+      used,
+      avail: Number.isFinite(avail) ? avail : 0,
+      size,
+      usePct: Number.isFinite(usePct) ? usePct : 0
+    })
   }
   return disks
 }
@@ -303,11 +353,23 @@ function parseProcs(text: string): ProcInfo[] {
     procs.push({
       pid,
       cpu: parseFloat(cols[1]) || 0,
-      mem: parseFloat(cols[2]) || 0,
+      rss: parseInt(cols[2], 10) || 0, // KB
       cmd: cols.slice(3).join(' ')
     })
   }
   return procs
+}
+
+function parseSysInfo(out: string): SysInfo {
+  const s = splitSections(out)
+  const line = (v?: string): string => (v || '').trim().split('\n')[0]?.trim() ?? ''
+  return {
+    hostname: line(s.HOST),
+    os: line(s.OS),
+    kernel: line(s.KERNEL),
+    cpuModel: line(s.CPU),
+    cores: parseInt(line(s.CORES), 10) || 0
+  }
 }
 
 function clamp(n: number, lo: number, hi: number): number {

@@ -4,7 +4,8 @@ import type {
   HostMeta,
   SessionDataEvent,
   SessionStatusEvent,
-  MonitorEvent
+  MonitorEvent,
+  SysInfoEvent
 } from '@shared/types'
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -31,7 +32,9 @@ const api = {
     subscribe('session:data', cb),
   onSessionStatus: (cb: (e: SessionStatusEvent) => void): (() => void) =>
     subscribe('session:status', cb),
-  onMonitorData: (cb: (e: MonitorEvent) => void): (() => void) => subscribe('monitor:data', cb)
+  onMonitorData: (cb: (e: MonitorEvent) => void): (() => void) => subscribe('monitor:data', cb),
+  onMonitorSysInfo: (cb: (e: SysInfoEvent) => void): (() => void) =>
+    subscribe('monitor:sysinfo', cb)
 }
 
 contextBridge.exposeInMainWorld('api', api)
