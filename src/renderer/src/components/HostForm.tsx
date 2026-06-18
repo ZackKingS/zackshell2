@@ -16,6 +16,7 @@ export default function HostForm({ host, onCancel, onSave }: Props): JSX.Element
   const [username, setUsername] = useState(host?.username ?? 'root')
   const [authType, setAuthType] = useState<AuthType>(host?.authType ?? 'password')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [privateKeyPath, setPrivateKeyPath] = useState(host?.privateKeyPath ?? '')
   const [passphrase, setPassphrase] = useState('')
 
@@ -87,12 +88,22 @@ export default function HostForm({ host, onCancel, onSave }: Props): JSX.Element
         {authType === 'password' ? (
           <label>
             密码
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={isEdit && host?.hasPassword ? '留空表示不修改' : ''}
-            />
+            <div className="input-with-action">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={isEdit && host?.hasPassword ? '留空表示不修改' : ''}
+              />
+              <button
+                type="button"
+                className="input-action-btn"
+                onClick={() => setShowPassword((v) => !v)}
+                title={showPassword ? '隐藏密码' : '显示密码'}
+              >
+                {showPassword ? '隐藏' : '显示'}
+              </button>
+            </div>
           </label>
         ) : (
           <>

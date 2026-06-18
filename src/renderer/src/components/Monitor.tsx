@@ -13,14 +13,16 @@ export default function Monitor({ sessionId }: Props): JSX.Element {
   const [selectedIf, setSelectedIf] = useState('')
   const [showSys, setShowSys] = useState(false)
   const selRef = useRef('')
-  const netHist = useRef<number[]>([])
+  const txHist = useRef<number[]>([])
+  const rxHist = useRef<number[]>([])
   const rttHist = useRef<number[]>([])
 
   useEffect(() => {
     const off1 = window.api.onMonitorData((e) => {
       if (e.id !== sessionId) return
       const act = pickIf(e.snapshot.interfaces, selRef.current)
-      push(netHist.current, act ? act.rx + act.tx : 0)
+      push(txHist.current, act ? act.tx : 0)
+      push(rxHist.current, act ? act.rx : 0)
       push(rttHist.current, e.snapshot.rttMs)
       setSnap(e.snapshot)
     })
@@ -49,7 +51,8 @@ export default function Monitor({ sessionId }: Props): JSX.Element {
   const changeIf = (name: string): void => {
     setSelectedIf(name)
     selRef.current = name
-    netHist.current = []
+    txHist.current = []
+    rxHist.current = []
   }
 
   return (
@@ -125,7 +128,7 @@ export default function Monitor({ sessionId }: Props): JSX.Element {
           ))}
         </select>
       </div>
-      <BarGraph data={netHist.current} color="#d9b98a" fmt={fmtNet} />
+      <BarGraph up={txHist.current} down={rxHist.current} fmt={fmtNet} />
 
       <div className="fs-ping-head">
         <span>{Math.round(snap.rttMs)}ms</span>
@@ -190,18 +193,32 @@ function Gauge({
 }
 
 function BarGraph({
-  data,
-  color,
+  up,
+  down,
   fmt
 }: {
-  data: number[]
-  color: string
+  up: number[]
+  down: number[]
   fmt: (v: number) => string
 }): JSX.Element {
   const W = 180
   const H = 58
-  const max = Math.max(...data, 1)
+  const max = Math.max(...up, ...down, 1)
   const bw = W / HISTORY
+  const series = (data: number[], fill: string): JSX.Element[] =>
+    data.map((v, i) => {
+      const h = (v / max) * H
+      return (
+        <rect
+          key={i}
+          x={i * bw}
+          y={H - h}
+          width={Math.max(bw - 0.6, 0.5)}
+          height={h}
+          fill={fill}
+        />
+      )
+    })
   return (
     <div className="fs-graph">
       <div className="fs-yaxis">
@@ -210,19 +227,8 @@ function BarGraph({
         <span>{fmt(max / 3)}</span>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="fs-svg">
-        {data.map((v, i) => {
-          const h = (v / max) * H
-          return (
-            <rect
-              key={i}
-              x={i * bw}
-              y={H - h}
-              width={Math.max(bw - 0.6, 0.5)}
-              height={h}
-              fill={color}
-            />
-          )
-        })}
+        {series(up, '#e6a594')}
+        {series(down, '#9cbf7e')}
       </svg>
     </div>
   )
