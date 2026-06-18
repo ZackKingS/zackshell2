@@ -1,4 +1,4 @@
-﻿import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type {
   HostInput,
   HostMeta,
@@ -45,6 +45,8 @@ const api = {
       ipcRenderer.invoke('sftp:download', id, transferId, remotePath, localPath),
     upload: (id: string, transferId: string, localPath: string, remotePath: string): Promise<void> =>
       ipcRenderer.invoke('sftp:upload', id, transferId, localPath, remotePath),
+    cancel: (id: string, transferId: string): Promise<void> =>
+      ipcRenderer.invoke('sftp:cancel', id, transferId),
     log: (level: string, message: string): void =>
       ipcRenderer.send('sftp:log', level, message),
     getPathForFile: (file: File): string => webUtils.getPathForFile(file)

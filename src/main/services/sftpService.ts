@@ -1,8 +1,196 @@
-import { appendFileSync, readdirSync, statSync } from 'fs'
+import { appendFileSync, promises as fsPromises } from 'fs'
 import { join } from 'path'
 import { SFTPWrapper } from 'ssh2'
 import type { SftpEntry } from '@shared/types'
 import type { Session, Sender } from '../sshManager'
+
+export interface TransferTask {
+  id: string
+  sessionId: string
+  client: any
+  direction: 'upload' | 'download'
+  localPath: string
+  remotePath: string
+  filename: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  transferred: number
+  total: number
+  sftpChannel?: SFTPWrapper
+  error?: string
+  send: Sender
+}
+
+class TransferQueueManager {
+  private queue: TransferTask[] = []
+  private activeCount = 0
+  private maxConcurrency = 3
+
+  add(task: TransferTask) {
+    this.queue.push(task)
+    this.schedule()
+  }
+
+  cancel(sessionId: string, transferId: string) {
+    const task = this.queue.find((t) => t.id === transferId && t.sessionId === sessionId)
+    if (!task) return
+
+    if (task.status === 'queued') {
+      task.status = 'cancelled'
+      task.send('sftp:progress', {
+        sessionId: task.sessionId,
+        transferId: task.id,
+        direction: task.direction,
+        filename: task.filename,
+        transferred: 0,
+        total: 0,
+        done: true,
+        error: 'Cancelled by user'
+      })
+      this.remove(task.id)
+    } else if (task.status === 'running') {
+      task.status = 'cancelled'
+      try {
+        task.sftpChannel?.end()
+      } catch (e) {
+        // ignore
+      }
+    }
+  }
+
+  cancelSession(sessionId: string) {
+    const sessionTasks = this.queue.filter((t) => t.sessionId === sessionId)
+    for (const task of sessionTasks) {
+      this.cancel(sessionId, task.id)
+    }
+  }
+
+  private remove(id: string) {
+    this.queue = this.queue.filter((t) => t.id !== id)
+  }
+
+  private schedule() {
+    if (this.activeCount >= this.maxConcurrency) return
+
+    const nextTask = this.queue.find((t) => t.status === 'queued')
+    if (!nextTask) return
+
+    this.activeCount++
+    this.runTask(nextTask)
+  }
+
+  private runTask(task: TransferTask) {
+    task.status = 'running'
+
+    task.client.sftp((err: any, sftp: SFTPWrapper) => {
+      if (task.status === 'cancelled') {
+        sftp?.end()
+        this.activeCount--
+        this.remove(task.id)
+        this.schedule()
+        return
+      }
+
+      if (err) {
+        task.status = 'failed'
+        task.error = err.message
+        task.send('sftp:progress', {
+          sessionId: task.sessionId,
+          transferId: task.id,
+          direction: task.direction,
+          filename: task.filename,
+          transferred: 0,
+          total: 0,
+          done: true,
+          error: err.message
+        })
+        this.activeCount--
+        this.remove(task.id)
+        this.schedule()
+        return
+      }
+
+      task.sftpChannel = sftp
+
+      const step = (transferred: number, _chunk: number, total: number) => {
+        if (task.status === 'cancelled') return
+        task.transferred = transferred
+        task.total = total
+        task.send('sftp:progress', {
+          sessionId: task.sessionId,
+          transferId: task.id,
+          direction: task.direction,
+          filename: task.filename,
+          transferred,
+          total,
+          done: false
+        })
+      }
+
+      const callback = (transferErr: any) => {
+        try {
+          sftp.end()
+        } catch {
+          // ignore
+        }
+        task.sftpChannel = undefined
+
+        this.activeCount--
+        this.remove(task.id)
+
+        if (task.status === 'cancelled') {
+          task.send('sftp:progress', {
+            sessionId: task.sessionId,
+            transferId: task.id,
+            direction: task.direction,
+            filename: task.filename,
+            transferred: 0,
+            total: 0,
+            done: true,
+            error: 'Cancelled by user'
+          })
+          this.schedule()
+          return
+        }
+
+        if (transferErr) {
+          task.status = 'failed'
+          task.error = transferErr.message
+          task.send('sftp:progress', {
+            sessionId: task.sessionId,
+            transferId: task.id,
+            direction: task.direction,
+            filename: task.filename,
+            transferred: 0,
+            total: 0,
+            done: true,
+            error: transferErr.message
+          })
+        } else {
+          task.status = 'completed'
+          task.send('sftp:progress', {
+            sessionId: task.sessionId,
+            transferId: task.id,
+            direction: task.direction,
+            filename: task.filename,
+            transferred: -1,
+            total: -1,
+            done: true
+          })
+        }
+
+        this.schedule()
+      }
+
+      if (task.direction === 'upload') {
+        sftp.fastPut(task.localPath, task.remotePath, { step }, callback)
+      } else {
+        sftp.fastGet(task.remotePath, task.localPath, { step }, callback)
+      }
+    })
+  }
+}
+
+export const transferQueue = new TransferQueueManager()
 
 export function logToFile(level: 'INFO' | 'ERROR' | 'WARN', msg: string, err?: any): void {
   try {
@@ -18,7 +206,6 @@ export function logToFile(level: 'INFO' | 'ERROR' | 'WARN', msg: string, err?: a
   }
 }
 
-/** Open (or reuse) an SFTP subsystem on the session. */
 export function getSftp(session: Session): Promise<SFTPWrapper> {
   if (!session) return Promise.reject(new Error('Session not found'))
   if (session.sftp) return Promise.resolve(session.sftp)
@@ -116,71 +303,27 @@ export function sftpDownload(
   localPath: string
 ): void {
   const filename = remotePath.split('/').pop() ?? remotePath
-  getSftp(session)
-    .then((sftp) => {
-      sftp.fastGet(
-        remotePath,
-        localPath,
-        {
-          step: (transferred: number, _chunk: number, total: number) => {
-            send('sftp:progress', {
-              sessionId: session.id,
-              transferId,
-              direction: 'download',
-              filename,
-              transferred,
-              total,
-              done: false
-            })
-          }
-        },
-        (err) => {
-          if (err) {
-            send('sftp:progress', {
-              sessionId: session.id,
-              transferId,
-              direction: 'download',
-              filename,
-              transferred: 0,
-              total: 0,
-              done: true,
-              error: err.message
-            })
-          } else {
-            send('sftp:progress', {
-              sessionId: session.id,
-              transferId,
-              direction: 'download',
-              filename,
-              transferred: -1,
-              total: -1,
-              done: true
-            })
-          }
-        }
-      )
-    })
-    .catch((err: Error) => {
-      send('sftp:progress', {
-        sessionId: session.id,
-        transferId,
-        direction: 'download',
-        filename,
-        transferred: 0,
-        total: 0,
-        done: true,
-        error: err.message
-      })
-    })
+  transferQueue.add({
+    id: transferId,
+    sessionId: session.id,
+    client: session.client,
+    direction: 'download',
+    localPath,
+    remotePath,
+    filename,
+    status: 'queued',
+    transferred: 0,
+    total: 0,
+    send
+  })
 }
 
-export function sftpUpload(
+async function walkDirectoryAndQueue(
   session: Session,
   send: Sender,
-  transferId: string,
   localPath: string,
   remotePath: string
-): void {
+): Promise<void> {
   const id = session.id
   const logInfo = (msg: string) => {
     console.log(msg)
@@ -195,126 +338,105 @@ export function sftpUpload(
     logToFile('ERROR', msg, err)
   }
 
-  logInfo(`[SFTP Upload] Initiating upload. Session: ${id}, Transfer: ${transferId}`)
-  logInfo(`[SFTP Upload] Local path: ${localPath}`)
-  logInfo(`[SFTP Upload] Remote path: ${remotePath}`)
+  logInfo(`[SFTP Upload] Starting recursive async walk: ${localPath} -> ${remotePath}`)
 
-  const filename = localPath.split(/[\\/]/).pop() ?? localPath
-  getSftp(session)
-    .then(async (sftp) => {
-      let stats
+  let sftp: SFTPWrapper
+  try {
+    sftp = await getSftp(session)
+  } catch (err) {
+    logError(`[SFTP Upload] Failed to open SFTP channel for directory creation`, err)
+    throw err
+  }
+
+  const mkdirRemote = async (remoteDirPath: string) => {
+    return new Promise<void>((resolve) => {
+      sftp.mkdir(remoteDirPath, (err) => {
+        if (err) {
+          logWarn(`[SFTP Upload] Remote mkdir warning (may already exist): ${remoteDirPath}`, err.message)
+        } else {
+          logInfo(`[SFTP Upload] Remote directory created: ${remoteDirPath}`)
+        }
+        resolve()
+      })
+    })
+  }
+
+  const traverse = async (localDirPath: string, remoteDirPath: string) => {
+    await mkdirRemote(remoteDirPath)
+
+    let items
+    try {
+      items = await fsPromises.readdir(localDirPath)
+    } catch (err) {
+      logError(`[SFTP Upload] Failed to read directory: ${localDirPath}`, err)
+      throw err
+    }
+
+    for (const item of items) {
+      const localItemPath = join(localDirPath, item)
+      const remoteItemPath = remoteDirPath.endsWith('/')
+        ? remoteDirPath + item
+        : remoteDirPath + '/' + item
+
+      let itemStats
       try {
-        stats = statSync(localPath)
-        logInfo(
-          `[SFTP Upload] Local path stats retrieved. isDirectory: ${stats.isDirectory()}, size: ${stats.size}`
-        )
+        itemStats = await fsPromises.stat(localItemPath)
       } catch (err) {
-        logError(`[SFTP Upload] Failed to stat local path: ${localPath}`, err)
+        logError(`[SFTP Upload] Failed to stat: ${localItemPath}`, err)
         throw err
       }
 
+      if (itemStats.isDirectory()) {
+        await traverse(localItemPath, remoteItemPath)
+      } else {
+        const fileTransferId = Date.now().toString(36) + Math.random().toString(36).slice(2)
+        logInfo(`[SFTP Upload] Queueing file: ${localItemPath} -> ${remoteItemPath} (ID: ${fileTransferId})`)
+        transferQueue.add({
+          id: fileTransferId,
+          sessionId: id,
+          client: session.client,
+          direction: 'upload',
+          localPath: localItemPath,
+          remotePath: remoteItemPath,
+          filename: item,
+          status: 'queued',
+          transferred: 0,
+          total: 0,
+          send
+        })
+      }
+    }
+  }
+
+  await traverse(localPath, remotePath)
+  logInfo(`[SFTP Upload] Finished walk and queued all items for: ${localPath}`)
+}
+
+export function sftpUpload(
+  session: Session,
+  send: Sender,
+  transferId: string,
+  localPath: string,
+  remotePath: string
+): void {
+  const id = session.id
+  const filename = localPath.split(/[\\/]/).pop() ?? localPath
+
+  fsPromises.stat(localPath)
+    .then((stats) => {
       if (stats.isDirectory()) {
-        logInfo(`[SFTP Upload] Starting recursive directory upload: ${localPath} -> ${remotePath}`)
-        const uploadDir = async (localDirPath: string, remoteDirPath: string) => {
-          logInfo(`[SFTP Upload] Creating remote directory: ${remoteDirPath}`)
-          await new Promise<void>((resolve) => {
-            sftp.mkdir(remoteDirPath, (err) => {
-              if (err) {
-                logWarn(
-                  `[SFTP Upload] Remote directory creation warning/info (it may already exist): ${remoteDirPath}`,
-                  err.message
-                )
-              } else {
-                logInfo(`[SFTP Upload] Remote directory created successfully: ${remoteDirPath}`)
-              }
-              resolve()
-            })
-          })
+        send('sftp:progress', {
+          sessionId: id,
+          transferId,
+          direction: 'upload',
+          filename,
+          transferred: 0,
+          total: 100,
+          done: false
+        })
 
-          let items
-          try {
-            items = readdirSync(localDirPath)
-            logInfo(`[SFTP Upload] Local directory read: ${localDirPath}. Items: ${JSON.stringify(items)}`)
-          } catch (err) {
-            logError(`[SFTP Upload] Failed to read local directory: ${localDirPath}`, err)
-            throw err
-          }
-
-          for (const item of items) {
-            const localItemPath = join(localDirPath, item)
-            const remoteItemPath = remoteDirPath.endsWith('/')
-              ? remoteDirPath + item
-              : remoteDirPath + '/' + item
-
-            let itemStats
-            try {
-              itemStats = statSync(localItemPath)
-            } catch (err) {
-              logError(`[SFTP Upload] Failed to stat local item: ${localItemPath}`, err)
-              throw err
-            }
-
-            if (itemStats.isDirectory()) {
-              await uploadDir(localItemPath, remoteItemPath)
-            } else {
-              const fileTransferId =
-                Date.now().toString(36) + Math.random().toString(36).slice(2)
-              logInfo(
-                `[SFTP Upload] Uploading file: ${localItemPath} -> ${remoteItemPath} (ID: ${fileTransferId})`
-              )
-              await new Promise<void>((resolve, reject) => {
-                sftp.fastPut(
-                  localItemPath,
-                  remoteItemPath,
-                  {
-                    step: (transferred, _chunk, total) => {
-                      send('sftp:progress', {
-                        sessionId: id,
-                        transferId: fileTransferId,
-                        direction: 'upload',
-                        filename: item,
-                        transferred,
-                        total,
-                        done: false
-                      })
-                    }
-                  },
-                  (err) => {
-                    if (err) {
-                      logError(`[SFTP Upload] Failed file upload: ${localItemPath}`, err)
-                      send('sftp:progress', {
-                        sessionId: id,
-                        transferId: fileTransferId,
-                        direction: 'upload',
-                        filename: item,
-                        transferred: 0,
-                        total: 0,
-                        done: true,
-                        error: err.message
-                      })
-                      reject(err)
-                    } else {
-                      logInfo(`[SFTP Upload] Successful file upload: ${localItemPath}`)
-                      send('sftp:progress', {
-                        sessionId: id,
-                        transferId: fileTransferId,
-                        direction: 'upload',
-                        filename: item,
-                        transferred: -1,
-                        total: -1,
-                        done: true
-                      })
-                      resolve()
-                    }
-                  }
-                )
-              })
-            }
-          }
-        }
-        uploadDir(localPath, remotePath)
+        walkDirectoryAndQueue(session, send, localPath, remotePath)
           .then(() => {
-            logInfo(`[SFTP Upload] Recursive upload complete for directory: ${localPath}`)
             send('sftp:progress', {
               sessionId: id,
               transferId,
@@ -326,7 +448,6 @@ export function sftpUpload(
             })
           })
           .catch((err) => {
-            logError(`[SFTP Upload] Recursive upload failed for directory: ${localPath}`, err)
             send('sftp:progress', {
               sessionId: id,
               transferId,
@@ -339,54 +460,22 @@ export function sftpUpload(
             })
           })
       } else {
-        logInfo(`[SFTP Upload] Starting single file upload: ${localPath} -> ${remotePath}`)
-        sftp.fastPut(
+        transferQueue.add({
+          id: transferId,
+          sessionId: id,
+          client: session.client,
+          direction: 'upload',
           localPath,
           remotePath,
-          {
-            step: (transferred: number, _chunk: number, total: number) => {
-              send('sftp:progress', {
-                sessionId: id,
-                transferId,
-                direction: 'upload',
-                filename,
-                transferred,
-                total,
-                done: false
-              })
-            }
-          },
-          (err) => {
-            if (err) {
-              logError(`[SFTP Upload] Single file upload failed: ${localPath}`, err)
-              send('sftp:progress', {
-                sessionId: id,
-                transferId,
-                direction: 'upload',
-                filename,
-                transferred: 0,
-                total: 0,
-                done: true,
-                error: err.message
-              })
-            } else {
-              logInfo(`[SFTP Upload] Single file upload successful: ${localPath}`)
-              send('sftp:progress', {
-                sessionId: id,
-                transferId,
-                direction: 'upload',
-                filename,
-                transferred: -1,
-                total: -1,
-                done: true
-              })
-            }
-          }
-        )
+          filename,
+          status: 'queued',
+          transferred: 0,
+          total: 0,
+          send
+        })
       }
     })
-    .catch((err: Error) => {
-      logError(`[SFTP Upload] General upload failure for: ${localPath}`, err)
+    .catch((err) => {
       send('sftp:progress', {
         sessionId: id,
         transferId,
@@ -398,4 +487,12 @@ export function sftpUpload(
         error: err.message
       })
     })
+}
+
+export function sftpCancel(sessionId: string, transferId: string): void {
+  transferQueue.cancel(sessionId, transferId)
+}
+
+export function sftpCancelSession(sessionId: string): void {
+  transferQueue.cancelSession(sessionId)
 }

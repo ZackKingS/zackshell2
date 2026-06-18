@@ -977,6 +977,19 @@ button {
   padding: 0;
 }
 .sftp-prog-clear:hover { text-decoration: underline; }
+.sftp-prog-cancel {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s;
+}
+.sftp-prog-cancel:hover { color: #f75c5c; }
 
 /* ---- SFTP Drag & Drop Overlay ---- */
 .sftp-files {

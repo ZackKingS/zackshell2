@@ -1,20 +1,15 @@
-# 架构优化阶段一 任务清单
+# 单元测试全覆盖 任务清单
 
-- [x] 创建 `telemetryService.ts` 监控子服务
-  - [x] 提取并封装监控命令与纯解析函数
-  - [x] 提取并封装系统指标采集与系统信息采集入口
-- [x] 创建 `sftpService.ts` 文件管理子服务
-  - [x] 提取 `logToFile` 工具函数
-  - [x] 提取并封装 SFTP 底层目录与修改权限操作
-  - [x] 提取并封装并发递归文件夹上传与下载机制
-- [x] 重构 `sshManager.ts` 会话管理
-  - [x] 清理冗余的解析函数、常量和辅助方法
-  - [x] 引用并接入新拆分的子服务
-  - [x] 将 SFTP 和 Telemetry 请求委托至对应服务类
-- [x] 编译与代码检查验证
-  - [x] 运行 `npm run typecheck` 验证 TS 编译
-  - [x] 引入 Vitest 并编写/运行系统监控指标解析单元测试
-- [/] 手动业务验证
-  - [ ] 验证 Terminal 主机建连与命令输入
-  - [ ] 验证 Monitor 监控面板实时更新及系统信息弹窗
-  - [ ] 验证 SFTP 新建/重命名/删除及拖放上传/下载文件
+- [x] 编写主机存储单元测试 `store.test.ts`
+  - [x] 实现 Electron `app` 和 `safeStorage` 的 Mock 拦截
+  - [x] 覆盖主机的新增（UUID 生成）、编辑（密码占位符更新）、列表查询（隐私保护）、删除以及获取详情等所有方法
+  - [x] 确保测试结束后自动清理测试产生的本地缓存文件
+- [x] 编写 SFTP 传输队列与异步遍历测试 `sftpService.test.ts`
+  - [x] Mock SSH2 `Client` 和 `SFTPWrapper` 连接信道
+  - [x] 实现 fastPut/fastGet 的进度 `step` 及回调模拟
+  - [x] 编写单文件排队与并发并发控制 (MAX = 3) 机制的验证测试
+  - [x] 编写单文件取消 (Cancel) 操作在不同状态（queued/running）下的中断测试
+  - [x] 使用本地临时目录测试 `walkDirectoryAndQueue` 异步文件收集
+- [x] 运行与结果核对
+  - [x] 运行 `npm run typecheck` 验证测试文件的 TS 语法
+  - [x] 运行 `npm run test` 验证所有 3 个测试套件均 100% 成功通过

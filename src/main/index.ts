@@ -91,6 +91,9 @@ function registerIpc(): void {
   ipcMain.handle('sftp:upload', (_e, id: string, transferId: string, localPath: string, remotePath: string) => {
     ssh.sftpUpload(id, transferId, localPath, remotePath)
   })
+  ipcMain.handle('sftp:cancel', (_e, id: string, transferId: string) => {
+    ssh.sftpCancel(id, transferId)
+  })
   ipcMain.on('sftp:log', (_e, level: 'INFO' | 'ERROR' | 'WARN', message: string) => {
     logToFile(level, message)
   })

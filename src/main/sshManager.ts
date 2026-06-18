@@ -161,6 +161,10 @@ export class SSHManager {
     sftpService.sftpUpload(session, this.send, transferId, localPath, remotePath)
   }
 
+  sftpCancel(id: string, transferId: string): void {
+    sftpService.sftpCancel(id, transferId)
+  }
+
   closeAll(): void {
     for (const id of [...this.sessions.keys()]) this.close(id)
   }
@@ -174,6 +178,7 @@ export class SSHManager {
     } catch {
       /* ignore */
     }
+    sftpService.sftpCancelSession(id)
     this.sessions.delete(id)
   }
 }

@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { SftpEntry, SftpProgressEvent } from '@shared/types'
 
 interface Props {
@@ -365,6 +365,13 @@ export default function SftpPanel({ sessionId }: Props): JSX.Element {
                 <div className="sftp-prog-fill" style={{ width: t.total > 0 ? Math.round(t.transferred / t.total * 100) + '%' : '0%' }} />
               </div>
               <span className="sftp-prog-pct">{t.total > 0 ? Math.round(t.transferred / t.total * 100) + '%' : '…'}</span>
+              <button
+                className="sftp-prog-cancel"
+                title="取消传输"
+                onClick={() => window.api.sftp.cancel(sessionId, t.id)}
+              >
+                ✕
+              </button>
             </div>
           ))}
           {doneTransfers.length > 0 && (
