@@ -293,11 +293,29 @@ export class SSHManager {
   private startMonitor(session: Session): void {
     const sample = (): void => {
       const t0 = Date.now()
+      // Guard: skip this tick if the previous exec is still running
+      if ((session as { _monBusy?: boolean })._monBusy) return
+      ;(session as { _monBusy?: boolean })._monBusy = true
+
       session.client.exec(MONITOR_CMD, (err, stream) => {
-        if (err) return
+        if (err) {
+          ;(session as { _monBusy?: boolean })._monBusy = false
+          return
+        }
         let out = ''
+        // MUST drain stderr or back-pressure will stall the whole SSH connection
+        stream.stderr.resume()
         stream.on('data', (d: Buffer) => (out += d.toString('utf8')))
+
+        // Safety timeout: 8 s — force-close the channel if the server hangs
+        const timer = setTimeout(() => {
+          try { stream.destroy() } catch { /* ignore */ }
+          ;(session as { _monBusy?: boolean })._monBusy = false
+        }, 8000)
+
         stream.on('close', () => {
+          clearTimeout(timer)
+          ;(session as { _monBusy?: boolean })._monBusy = false
           const snapshot = parseMonitorOutput(out, session)
           if (snapshot) {
             snapshot.rttMs = Date.now() - t0
@@ -314,6 +332,7 @@ export class SSHManager {
     session.client.exec(SYSINFO_CMD, (err, stream) => {
       if (err) return
       let out = ''
+      stream.stderr.resume()
       stream.on('data', (d: Buffer) => (out += d.toString('utf8')))
       stream.on('close', () =>
         this.send('monitor:sysinfo', { id: session.id, info: parseSysInfo(out) })
