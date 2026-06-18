@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'path'
-import { SSHManager } from './sshManager'
+import { SSHManager, logToFile } from './sshManager'
 import { hostStore } from './store'
 import type { HostInput } from '@shared/types'
 
@@ -90,6 +90,9 @@ function registerIpc(): void {
   })
   ipcMain.handle('sftp:upload', (_e, id: string, transferId: string, localPath: string, remotePath: string) => {
     ssh.sftpUpload(id, transferId, localPath, remotePath)
+  })
+  ipcMain.on('sftp:log', (_e, level: 'INFO' | 'ERROR' | 'WARN', message: string) => {
+    logToFile(level, message)
   })
 }
 

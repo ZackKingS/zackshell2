@@ -53,6 +53,11 @@ interface Transfer {
 // ---- component ----
 export default function SftpPanel({ sessionId }: Props): JSX.Element {
   const [cwd, setCwd] = useState('/')
+  const [isDragOver, setIsDragOver] = useState(false)
+  const cwdRef = useRef(cwd)
+  useEffect(() => {
+    cwdRef.current = cwd
+  }, [cwd])
   const [entries, setEntries] = useState<SftpEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -86,6 +91,9 @@ export default function SftpPanel({ sessionId }: Props): JSX.Element {
         if (idx >= 0) { const n = [...prev]; n[idx] = item; return n }
         return [...prev, item]
       })
+      if (e.done && e.direction === 'upload' && !e.error) {
+        refresh(cwdRef.current)
+      }
     })
     return unsub
   }, [sessionId, refresh])
@@ -162,6 +170,53 @@ export default function SftpPanel({ sessionId }: Props): JSX.Element {
     await window.api.sftp.upload(sessionId, transferId, localPath, joinPath(cwd, filename))
   }
 
+  // ---- drag & drop ----
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!isDragOver) {
+      setIsDragOver(true)
+      window.api.sftp.log('INFO', 'Frontend: Drag over/enter SftpPanel')
+    }
+  }, [isDragOver])
+ 
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX
+    const y = e.clientY
+    if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
+      setIsDragOver(false)
+      window.api.sftp.log('INFO', 'Frontend: Drag leave SftpPanel')
+    }
+  }, [])
+ 
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+ 
+    const files = e.dataTransfer.files
+    window.api.sftp.log('INFO', `Frontend: File drop event. Files count: ${files ? files.length : 0}`)
+    if (!files || files.length === 0) return
+ 
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const localPath = window.api.sftp.getPathForFile(file)
+      const filename = file.name
+      window.api.sftp.log('INFO', `Frontend: File item ${i} - name: ${filename}, path: ${localPath}, size: ${file.size}`)
+      
+      if (!localPath) {
+        window.api.sftp.log('WARN', `Frontend: File path is empty for file: ${filename}`)
+        continue
+      }
+ 
+      const transferId = Date.now().toString(36) + Math.random().toString(36).slice(2)
+      await window.api.sftp.upload(sessionId, transferId, localPath, joinPath(cwd, filename))
+    }
+  }, [sessionId, cwd])
+ 
   // ---- tree render ----
   const renderTree = (nodes: TreeNode[], depth = 0): JSX.Element[] =>
     nodes.flatMap((node) => [
@@ -206,7 +261,21 @@ export default function SftpPanel({ sessionId }: Props): JSX.Element {
         <div className="sftp-tree-divider" />
 
         {/* File list */}
-        <div className="sftp-files">
+        <div
+          className={`sftp-files${isDragOver ? ' drag-over' : ''}`}
+          onDragEnter={handleDragOver}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {isDragOver && (
+            <div className="sftp-drag-overlay">
+              <div className="sftp-drag-overlay-box">
+                <span className="sftp-drag-icon">📤</span>
+                <span className="sftp-drag-text">拖放文件或文件夹到此处上传</span>
+              </div>
+            </div>
+          )}
           {loading && <div className="sftp-msg">加载中…</div>}
           {error   && <div className="sftp-msg sftp-msg-err">错误: {error}</div>}
           {!loading && !error && (

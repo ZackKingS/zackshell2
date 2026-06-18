@@ -1,4 +1,5 @@
-import { readFileSync } from 'fs'
+import { readFileSync, statSync, readdirSync, appendFileSync } from 'fs'
+import { join } from 'path'
 import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2'
 import type { FullHost } from './store'
 import type { MonitorSnapshot, ProcInfo, DiskUsage, NetIf, SysInfo, SftpEntry } from '@shared/types'
@@ -59,6 +60,20 @@ const SYSINFO_CMD = [
   "echo '@@CORES'; nproc 2>/dev/null",
   "echo '@@END'"
 ].join('; ')
+
+export function logToFile(level: 'INFO' | 'ERROR' | 'WARN', msg: string, err?: any): void {
+  try {
+    const logPath = join(process.cwd(), 'sftp_upload.log')
+    const time = new Date().toISOString()
+    let errStr = ''
+    if (err) {
+      errStr = ' | Error: ' + (err instanceof Error ? err.stack || err.message : JSON.stringify(err))
+    }
+    appendFileSync(logPath, `[${time}] [${level}] ${msg}${errStr}\n`, 'utf8')
+  } catch (e) {
+    // ignore
+  }
+}
 
 export class SSHManager {
   private sessions = new Map<string, Session>()
@@ -261,23 +276,126 @@ export class SSHManager {
     localPath: string,
     remotePath: string
   ): void {
+    const logInfo = (msg: string) => {
+      console.log(msg);
+      logToFile('INFO', msg);
+    };
+    const logWarn = (msg: string, errMessage: string) => {
+      console.warn(msg + ' : ' + errMessage);
+      logToFile('WARN', msg + ' : ' + errMessage);
+    };
+    const logError = (msg: string, err: any) => {
+      console.error(msg, err);
+      logToFile('ERROR', msg, err);
+    };
+
+    logInfo(`[SFTP Upload] Initiating upload. Session: ${id}, Transfer: ${transferId}`);
+    logInfo(`[SFTP Upload] Local path: ${localPath}`);
+    logInfo(`[SFTP Upload] Remote path: ${remotePath}`);
+
     const filename = localPath.split(/[\\/]/).pop() ?? localPath
-    this.getSftp(id).then((sftp) => {
-      sftp.fastPut(localPath, remotePath, {
-        step: (transferred: number, _chunk: number, total: number) => {
-          this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred, total, done: false })
+    this.getSftp(id).then(async (sftp) => {
+      let stats;
+      try {
+        stats = statSync(localPath);
+        logInfo(`[SFTP Upload] Local path stats retrieved. isDirectory: ${stats.isDirectory()}, size: ${stats.size}`);
+      } catch (err) {
+        logError(`[SFTP Upload] Failed to stat local path: ${localPath}`, err);
+        throw err;
+      }
+
+      if (stats.isDirectory()) {
+        logInfo(`[SFTP Upload] Starting recursive directory upload: ${localPath} -> ${remotePath}`);
+        const uploadDir = async (localDirPath: string, remoteDirPath: string) => {
+          logInfo(`[SFTP Upload] Creating remote directory: ${remoteDirPath}`);
+          await new Promise<void>((resolve) => {
+            sftp.mkdir(remoteDirPath, (err) => {
+              if (err) {
+                logWarn(`[SFTP Upload] Remote directory creation warning/info (it may already exist): ${remoteDirPath}`, err.message);
+              } else {
+                logInfo(`[SFTP Upload] Remote directory created successfully: ${remoteDirPath}`);
+              }
+              resolve()
+            })
+          })
+
+          let items;
+          try {
+            items = readdirSync(localDirPath);
+            logInfo(`[SFTP Upload] Local directory read: ${localDirPath}. Items: ${JSON.stringify(items)}`);
+          } catch (err) {
+            logError(`[SFTP Upload] Failed to read local directory: ${localDirPath}`, err);
+            throw err;
+          }
+
+          for (const item of items) {
+            const localItemPath = join(localDirPath, item)
+            const remoteItemPath = remoteDirPath.endsWith('/') ? remoteDirPath + item : remoteDirPath + '/' + item
+            
+            let itemStats;
+            try {
+              itemStats = statSync(localItemPath);
+            } catch (err) {
+              logError(`[SFTP Upload] Failed to stat local item: ${localItemPath}`, err);
+              throw err;
+            }
+
+            if (itemStats.isDirectory()) {
+              await uploadDir(localItemPath, remoteItemPath)
+            } else {
+              const fileTransferId = Date.now().toString(36) + Math.random().toString(36).slice(2)
+              logInfo(`[SFTP Upload] Uploading file: ${localItemPath} -> ${remoteItemPath} (ID: ${fileTransferId})`);
+              await new Promise<void>((resolve, reject) => {
+                sftp.fastPut(localItemPath, remoteItemPath, {
+                  step: (transferred, _chunk, total) => {
+                    this.send('sftp:progress', { sessionId: id, transferId: fileTransferId, direction: 'upload', filename: item, transferred, total, done: false })
+                  }
+                }, (err) => {
+                  if (err) {
+                    logError(`[SFTP Upload] Failed file upload: ${localItemPath}`, err);
+                    this.send('sftp:progress', { sessionId: id, transferId: fileTransferId, direction: 'upload', filename: item, transferred: 0, total: 0, done: true, error: err.message })
+                    reject(err)
+                  } else {
+                    logInfo(`[SFTP Upload] Successful file upload: ${localItemPath}`);
+                    this.send('sftp:progress', { sessionId: id, transferId: fileTransferId, direction: 'upload', filename: item, transferred: -1, total: -1, done: true })
+                    resolve()
+                  }
+                })
+              })
+            }
+          }
         }
-      }, (err) => {
-        if (err) {
-          this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred: 0, total: 0, done: true, error: err.message })
-        } else {
-          this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred: -1, total: -1, done: true })
-        }
-      })
+        uploadDir(localPath, remotePath)
+          .then(() => {
+            logInfo(`[SFTP Upload] Recursive upload complete for directory: ${localPath}`);
+            this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred: -1, total: -1, done: true })
+          })
+          .catch((err) => {
+            logError(`[SFTP Upload] Recursive upload failed for directory: ${localPath}`, err);
+            this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred: 0, total: 0, done: true, error: err.message })
+          })
+      } else {
+        logInfo(`[SFTP Upload] Starting single file upload: ${localPath} -> ${remotePath}`);
+        sftp.fastPut(localPath, remotePath, {
+          step: (transferred: number, _chunk: number, total: number) => {
+            this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred, total, done: false })
+          }
+        }, (err) => {
+          if (err) {
+            logError(`[SFTP Upload] Single file upload failed: ${localPath}`, err);
+            this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred: 0, total: 0, done: true, error: err.message })
+          } else {
+            logInfo(`[SFTP Upload] Single file upload successful: ${localPath}`);
+            this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred: -1, total: -1, done: true })
+          }
+        })
+      }
     }).catch((err: Error) => {
+      logError(`[SFTP Upload] General upload failure for: ${localPath}`, err);
       this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred: 0, total: 0, done: true, error: err.message })
     })
   }
+
   closeAll(): void {
     for (const id of [...this.sessions.keys()]) this.close(id)
   }
@@ -307,7 +425,7 @@ export class SSHManager {
         stream.stderr.resume()
         stream.on('data', (d: Buffer) => (out += d.toString('utf8')))
 
-        // Safety timeout: 8 s — force-close the channel if the server hangs
+        // Safety timeout: 8 s ï¿½ force-close the channel if the server hangs
         const timer = setTimeout(() => {
           try { stream.destroy() } catch { /* ignore */ }
           ;(session as { _monBusy?: boolean })._monBusy = false
