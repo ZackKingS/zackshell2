@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs'
-import { Client, type ClientChannel } from 'ssh2'
+import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2'
 import type { FullHost } from './store'
-import type { MonitorSnapshot, ProcInfo, DiskUsage, NetIf, SysInfo } from '@shared/types'
+import type { MonitorSnapshot, ProcInfo, DiskUsage, NetIf, SysInfo, SftpEntry } from '@shared/types'
 
 type Sender = (channel: string, payload: unknown) => void
 
@@ -20,6 +20,7 @@ export interface MonitorState {
   prevNet?: NetSample
   prevNetIf?: Record<string, NetSample>
   prevTime?: number
+  sftp?: SFTPWrapper
 }
 
 interface Session {
@@ -31,6 +32,7 @@ interface Session {
   prevNet?: NetSample
   prevNetIf?: Record<string, NetSample>
   prevTime?: number
+  sftp?: SFTPWrapper
 }
 
 const MONITOR_INTERVAL_MS = 2000
@@ -154,6 +156,128 @@ export class SSHManager {
     this.cleanup(id)
   }
 
+
+  // ===================== SFTP =====================
+
+  /** Open (or reuse) an SFTP subsystem on the session. */
+  private getSftp(id: string): Promise<SFTPWrapper> {
+    const session = this.sessions.get(id)
+    if (!session) return Promise.reject(new Error('Session not found'))
+    if (session.sftp) return Promise.resolve(session.sftp)
+    return new Promise((resolve, reject) => {
+      session.client.sftp((err, sftp) => {
+        if (err) return reject(err)
+        session.sftp = sftp
+        sftp.on('error', () => { session.sftp = undefined })
+        resolve(sftp)
+      })
+    })
+  }
+
+  async sftpList(id: string, remotePath: string): Promise<SftpEntry[]> {
+    const sftp = await this.getSftp(id)
+    return new Promise((resolve, reject) => {
+      sftp.readdir(remotePath, (err, list) => {
+        if (err) return reject(err)
+        const entries: SftpEntry[] = list.map((item) => {
+          const attrs = item.attrs as {
+            size: number; mtime: number; mode: number;
+            isDirectory: () => boolean; isSymbolicLink: () => boolean
+          }
+          return {
+            filename: item.filename,
+            longname: item.longname ?? '',
+            isDir: typeof attrs.isDirectory === 'function' ? attrs.isDirectory() : !!(attrs.mode & 0o040000),
+            isSymlink: typeof attrs.isSymbolicLink === 'function' ? attrs.isSymbolicLink() : !!(attrs.mode & 0o120000),
+            size: attrs.size ?? 0,
+            modTime: attrs.mtime ?? 0,
+            permissions: attrs.mode ?? 0
+          }
+        })
+        resolve(entries)
+      })
+    })
+  }
+
+  async sftpMkdir(id: string, remotePath: string): Promise<void> {
+    const sftp = await this.getSftp(id)
+    return new Promise((resolve, reject) => {
+      sftp.mkdir(remotePath, (err) => (err ? reject(err) : resolve()))
+    })
+  }
+
+  async sftpRename(id: string, oldPath: string, newPath: string): Promise<void> {
+    const sftp = await this.getSftp(id)
+    return new Promise((resolve, reject) => {
+      sftp.rename(oldPath, newPath, (err) => (err ? reject(err) : resolve()))
+    })
+  }
+
+  async sftpRemove(id: string, remotePath: string, isDir: boolean): Promise<void> {
+    const sftp = await this.getSftp(id)
+    return new Promise((resolve, reject) => {
+      if (isDir) {
+        sftp.rmdir(remotePath, (err) => (err ? reject(err) : resolve()))
+      } else {
+        sftp.unlink(remotePath, (err) => (err ? reject(err) : resolve()))
+      }
+    })
+  }
+
+  async sftpChmod(id: string, remotePath: string, mode: number): Promise<void> {
+    const sftp = await this.getSftp(id)
+    return new Promise((resolve, reject) => {
+      sftp.chmod(remotePath, mode, (err) => (err ? reject(err) : resolve()))
+    })
+  }
+
+  sftpDownload(
+    id: string,
+    transferId: string,
+    remotePath: string,
+    localPath: string
+  ): void {
+    const filename = remotePath.split('/').pop() ?? remotePath
+    this.getSftp(id).then((sftp) => {
+      sftp.fastGet(remotePath, localPath, {
+        step: (transferred: number, _chunk: number, total: number) => {
+          this.send('sftp:progress', { sessionId: id, transferId, direction: 'download', filename, transferred, total, done: false })
+        }
+      }, (err) => {
+        if (err) {
+          this.send('sftp:progress', { sessionId: id, transferId, direction: 'download', filename, transferred: 0, total: 0, done: true, error: err.message })
+        } else {
+          this.send('sftp:progress', { sessionId: id, transferId, direction: 'download', filename, transferred: -1, total: -1, done: true })
+        }
+      })
+    }).catch((err: Error) => {
+      this.send('sftp:progress', { sessionId: id, transferId, direction: 'download', filename, transferred: 0, total: 0, done: true, error: err.message })
+    })
+  }
+
+  sftpUpload(
+    id: string,
+    transferId: string,
+    localPath: string,
+    remotePath: string
+  ): void {
+    const filename = localPath.split(/[\\/]/).pop() ?? localPath
+    this.getSftp(id).then((sftp) => {
+      sftp.fastPut(localPath, remotePath, {
+        step: (transferred: number, _chunk: number, total: number) => {
+          this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred, total, done: false })
+        }
+      }, (err) => {
+        if (err) {
+          this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred: 0, total: 0, done: true, error: err.message })
+        } else {
+          this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred: -1, total: -1, done: true })
+        }
+      })
+    }).catch((err: Error) => {
+      this.send('sftp:progress', { sessionId: id, transferId, direction: 'upload', filename, transferred: 0, total: 0, done: true, error: err.message })
+    })
+  }
   closeAll(): void {
     for (const id of [...this.sessions.keys()]) this.close(id)
   }
@@ -162,6 +286,7 @@ export class SSHManager {
     const s = this.sessions.get(id)
     if (!s) return
     if (s.monitorTimer) clearInterval(s.monitorTimer)
+    try { s.sftp?.end() } catch { /* ignore */ }
     this.sessions.delete(id)
   }
 

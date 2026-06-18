@@ -1,11 +1,13 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+﻿import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   HostInput,
   HostMeta,
   SessionDataEvent,
   SessionStatusEvent,
   MonitorEvent,
-  SysInfoEvent
+  SysInfoEvent,
+  SftpEntry,
+  SftpProgressEvent
 } from '@shared/types'
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -28,13 +30,31 @@ const api = {
     resize: (id: string, cols: number, rows: number): void =>
       ipcRenderer.send('session:resize', id, cols, rows)
   },
+  sftp: {
+    list: (id: string, remotePath: string): Promise<{ ok: boolean; entries?: SftpEntry[]; error?: string }> =>
+      ipcRenderer.invoke('sftp:list', id, remotePath),
+    mkdir: (id: string, remotePath: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('sftp:mkdir', id, remotePath),
+    rename: (id: string, oldPath: string, newPath: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('sftp:rename', id, oldPath, newPath),
+    remove: (id: string, remotePath: string, isDir: boolean): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('sftp:remove', id, remotePath, isDir),
+    chmod: (id: string, remotePath: string, mode: number): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('sftp:chmod', id, remotePath, mode),
+    download: (id: string, transferId: string, remotePath: string, localPath: string): Promise<void> =>
+      ipcRenderer.invoke('sftp:download', id, transferId, remotePath, localPath),
+    upload: (id: string, transferId: string, localPath: string, remotePath: string): Promise<void> =>
+      ipcRenderer.invoke('sftp:upload', id, transferId, localPath, remotePath)
+  },
   onSessionData: (cb: (e: SessionDataEvent) => void): (() => void) =>
     subscribe('session:data', cb),
   onSessionStatus: (cb: (e: SessionStatusEvent) => void): (() => void) =>
     subscribe('session:status', cb),
   onMonitorData: (cb: (e: MonitorEvent) => void): (() => void) => subscribe('monitor:data', cb),
   onMonitorSysInfo: (cb: (e: SysInfoEvent) => void): (() => void) =>
-    subscribe('monitor:sysinfo', cb)
+    subscribe('monitor:sysinfo', cb),
+  onSftpProgress: (cb: (e: SftpProgressEvent) => void): (() => void) =>
+    subscribe('sftp:progress', cb)
 }
 
 contextBridge.exposeInMainWorld('api', api)

@@ -99,3 +99,33 @@ export interface SysInfoEvent {
   id: string
   info: SysInfo
 }
+
+// ========== SFTP ==========
+
+export interface SftpEntry {
+  filename: string
+  longname: string
+  isDir: boolean
+  isSymlink: boolean
+  size: number       // bytes
+  modTime: number    // unix seconds
+  permissions: number
+}
+
+export interface SftpListResult {
+  sessionId: string
+  path: string
+  entries: SftpEntry[]
+  error?: string
+}
+
+export interface SftpProgressEvent {
+  sessionId: string
+  transferId: string
+  direction: 'upload' | 'download'
+  filename: string
+  transferred: number
+  total: number
+  done: boolean
+  error?: string
+}

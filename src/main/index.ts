@@ -60,6 +60,37 @@ function registerIpc(): void {
     ssh.resize(id, cols, rows)
   )
   ipcMain.handle('session:close', (_e, id: string) => ssh.close(id))
+  // ---- SFTP ----
+  ipcMain.handle('sftp:list', async (_e, id: string, remotePath: string) => {
+    try {
+      const entries = await ssh.sftpList(id, remotePath)
+      return { ok: true, entries }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
+  })
+  ipcMain.handle('sftp:mkdir', async (_e, id: string, remotePath: string) => {
+    try { await ssh.sftpMkdir(id, remotePath); return { ok: true } }
+    catch (err) { return { ok: false, error: (err as Error).message } }
+  })
+  ipcMain.handle('sftp:rename', async (_e, id: string, oldPath: string, newPath: string) => {
+    try { await ssh.sftpRename(id, oldPath, newPath); return { ok: true } }
+    catch (err) { return { ok: false, error: (err as Error).message } }
+  })
+  ipcMain.handle('sftp:remove', async (_e, id: string, remotePath: string, isDir: boolean) => {
+    try { await ssh.sftpRemove(id, remotePath, isDir); return { ok: true } }
+    catch (err) { return { ok: false, error: (err as Error).message } }
+  })
+  ipcMain.handle('sftp:chmod', async (_e, id: string, remotePath: string, mode: number) => {
+    try { await ssh.sftpChmod(id, remotePath, mode); return { ok: true } }
+    catch (err) { return { ok: false, error: (err as Error).message } }
+  })
+  ipcMain.handle('sftp:download', (_e, id: string, transferId: string, remotePath: string, localPath: string) => {
+    ssh.sftpDownload(id, transferId, remotePath, localPath)
+  })
+  ipcMain.handle('sftp:upload', (_e, id: string, transferId: string, localPath: string, remotePath: string) => {
+    ssh.sftpUpload(id, transferId, localPath, remotePath)
+  })
 }
 
 app.whenReady().then(() => {

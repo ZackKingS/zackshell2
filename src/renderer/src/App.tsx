@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import type { HostMeta, SessionStatus } from '@shared/types'
 import Sidebar from './components/Sidebar'
 import HostForm from './components/HostForm'
 import TerminalView from './components/Terminal'
 import Monitor from './components/Monitor'
+import SftpPanel from './components/SftpPanel'
 
 interface Tab {
   sessionId: string
@@ -11,11 +12,12 @@ interface Tab {
   name: string
 }
 
-// crypto.randomUUID() only exists in secure contexts; the dev server runs on a
-// plain-http LAN IP, so generate a session id without it.
 function newSessionId(): string {
   return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)
 }
+
+const MIN_TERM_H = 80   // px
+const MIN_SFTP_H = 100  // px
 
 export default function App(): JSX.Element {
   const [hosts, setHosts] = useState<HostMeta[]>([])
@@ -24,6 +26,11 @@ export default function App(): JSX.Element {
   const [status, setStatus] = useState<Record<string, SessionStatus>>({})
   const [editing, setEditing] = useState<HostMeta | 'new' | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+
+  // Split ratio: terminal height fraction (0-1)
+  const [splitFrac, setSplitFrac] = useState(0.55)
+  const dragging = useRef(false)
+  const splitAreaRef = useRef<HTMLDivElement>(null)
 
   const refreshHosts = useCallback(async () => {
     setHosts(await window.api.hosts.list())
@@ -40,24 +47,19 @@ export default function App(): JSX.Element {
     const sessionId = newSessionId()
     setTabs((prev) => [...prev, { sessionId, hostId: host.id, name: host.name }])
     setActiveId(sessionId)
-    // Open after the tab (and its subscribers) are registered; the SSH handshake
-    // takes far longer than this render, so no terminal output is missed.
     window.api.session.open(sessionId, host.id)
   }, [])
 
-  const closeTab = useCallback(
-    (sessionId: string) => {
-      window.api.session.close(sessionId)
-      setTabs((prev) => {
-        const next = prev.filter((t) => t.sessionId !== sessionId)
-        setActiveId((cur) =>
-          cur === sessionId ? next[next.length - 1]?.sessionId ?? null : cur
-        )
-        return next
-      })
-    },
-    []
-  )
+  const closeTab = useCallback((sessionId: string) => {
+    window.api.session.close(sessionId)
+    setTabs((prev) => {
+      const next = prev.filter((t) => t.sessionId !== sessionId)
+      setActiveId((cur) =>
+        cur === sessionId ? next[next.length - 1]?.sessionId ?? null : cur
+      )
+      return next
+    })
+  }, [])
 
   const saveHost = useCallback(
     async (input: Parameters<typeof window.api.hosts.save>[0]) => {
@@ -68,13 +70,38 @@ export default function App(): JSX.Element {
     [refreshHosts]
   )
 
-  const deleteHost = useCallback(
-    async (id: string) => {
-      await window.api.hosts.delete(id)
-      refreshHosts()
-    },
-    [refreshHosts]
-  )
+  const deleteHost = useCallback(async (id: string) => {
+    await window.api.hosts.delete(id)
+    refreshHosts()
+  }, [refreshHosts])
+
+  // ---- drag-to-resize ----
+  const onDividerMouseDown = (e: React.MouseEvent): void => {
+    e.preventDefault()
+    dragging.current = true
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+
+    const onMove = (me: MouseEvent): void => {
+      if (!dragging.current || !splitAreaRef.current) return
+      const rect = splitAreaRef.current.getBoundingClientRect()
+      const totalH = rect.height
+      const rawFrac = (me.clientY - rect.top) / totalH
+      // clamp so both panes stay usable
+      const minFrac = MIN_TERM_H / totalH
+      const maxFrac = 1 - MIN_SFTP_H / totalH
+      setSplitFrac(Math.min(Math.max(rawFrac, minFrac), maxFrac))
+    }
+    const onUp = (): void => {
+      dragging.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
 
   return (
     <div className="app">
@@ -89,14 +116,13 @@ export default function App(): JSX.Element {
       )}
 
       <div className="workspace">
+        {/* Tab bar */}
         <div className="tabbar">
           <button
             className="icon-btn"
             title={sidebarOpen ? '隐藏主机列表' : '显示主机列表'}
             onClick={() => setSidebarOpen((v) => !v)}
-          >
-            ☰
-          </button>
+          >☰</button>
           {tabs.map((t) => (
             <div
               key={t.sessionId}
@@ -105,19 +131,12 @@ export default function App(): JSX.Element {
             >
               <span className={'dot ' + (status[t.sessionId] ?? 'connecting')} />
               <span className="tab-name">{t.name}</span>
-              <span
-                className="tab-close"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  closeTab(t.sessionId)
-                }}
-              >
-                ×
-              </span>
+              <span className="tab-close" onClick={(e) => { e.stopPropagation(); closeTab(t.sessionId) }}>×</span>
             </div>
           ))}
         </div>
 
+        {/* Main content */}
         <div className="session-area">
           {tabs.length === 0 && (
             <div className="empty-state">
@@ -125,16 +144,49 @@ export default function App(): JSX.Element {
               <p>从左侧选择一台主机连接，或点击「+ 新建主机」。</p>
             </div>
           )}
-          {tabs.map((t) => (
-            <div
-              key={t.sessionId}
-              className="session-view"
-              style={{ display: t.sessionId === activeId ? 'flex' : 'none' }}
-            >
-              <Monitor sessionId={t.sessionId} />
-              <TerminalView sessionId={t.sessionId} active={t.sessionId === activeId} />
-            </div>
-          ))}
+
+          {tabs.map((t) => {
+            const connected = status[t.sessionId] === 'connected'
+            const isActive = t.sessionId === activeId
+            return (
+              <div
+                key={t.sessionId}
+                className="session-view"
+                style={{ display: isActive ? 'flex' : 'none' }}
+              >
+                {/* Left monitor panel */}
+                <Monitor sessionId={t.sessionId} />
+
+                {/* Right: terminal + sftp split */}
+                <div className="split-area" ref={isActive ? splitAreaRef : undefined}>
+                  {/* Terminal pane */}
+                  <div
+                    className="split-term"
+                    style={{ flex: `0 0 ${(splitFrac * 100).toFixed(2)}%` }}
+                  >
+                    <TerminalView sessionId={t.sessionId} active={isActive} />
+                  </div>
+
+                  {/* Divider */}
+                  <div className="split-divider" onMouseDown={onDividerMouseDown}>
+                    <div className="split-divider-grip" />
+                  </div>
+
+                  {/* SFTP pane */}
+                  <div className="split-sftp">
+                    {connected
+                      ? <SftpPanel sessionId={t.sessionId} />
+                      : (
+                        <div className="sftp-waiting">
+                          <span>SSH 连接成功后自动加载文件管理器</span>
+                        </div>
+                      )
+                    }
+                  </div>
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
 
