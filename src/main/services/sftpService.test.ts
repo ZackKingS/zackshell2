@@ -291,4 +291,98 @@ describe('sftpService - walkDirectoryAndQueue', () => {
     const parentCompleteEvent = progressEvents.find(e => e.transferId === 't-dir' && e.done)
     expect(parentCompleteEvent).toBeDefined()
   })
+
+  it('should wait for nested files to complete before parent directory upload is done', async () => {
+    // Override fastPut to take 100ms
+    mockClient.sftp = vi.fn((callback: (err: any, sftp: any) => void) => {
+      const mockSftp = {
+        fastPut: vi.fn((_local: string, _remote: string, _options: any, cb: (err?: any) => void) => {
+          setTimeout(() => cb(null), 100)
+        }),
+        fastGet: vi.fn((_remote: string, _local: string, _options: any, cb: (err?: any) => void) => {
+          cb(null)
+        }),
+        mkdir: vi.fn((_remote: string, cb: (err?: any) => void) => cb(null)),
+        readdir: vi.fn((_remote: string, cb: (err?: any, list?: any[]) => void) => cb(null, [])),
+        on: vi.fn(),
+        end: vi.fn()
+      }
+      callback(null, mockSftp)
+    })
+
+    sftpUpload(mockSession, sendSpy, 't-dir', testTempDir, '/remote/dest')
+
+    // Wait until the parent folder done event is sent
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const doneEvent = progressEvents.find(e => e.transferId === 't-dir' && e.done)
+        if (doneEvent) {
+          resolve()
+        } else {
+          setTimeout(check, 2)
+        }
+      }
+      check()
+    })
+
+    // At this point, the parent folder reported done: true.
+    // Let's check if the nested files have finished transferring.
+    const file1Complete = progressEvents.find(e => e.filename === 'file1.txt' && e.done)
+    const file2Complete = progressEvents.find(e => e.filename === 'file2.txt' && e.done)
+
+    console.log('BUG 1 FIXED CHECK: Parent directory reported done: true')
+    console.log(`file1.txt done? ${!!file1Complete}`)
+    console.log(`file2.txt done? ${!!file2Complete}`)
+
+    // Since the bug is fixed, the files must be done when the directory reports done.
+    expect(file1Complete).toBeDefined()
+    expect(file2Complete).toBeDefined()
+  })
+
+  it('should cancel all queued files when parent directory upload is cancelled', async () => {
+    const activeCallbacks: any[] = []
+    mockClient.sftp = vi.fn((callback: (err: any, sftp: any) => void) => {
+      const mockSftp = {
+        fastPut: vi.fn((_local: string, _remote: string, _options: any, cb: (err?: any) => void) => {
+          activeCallbacks.push(cb)
+        }),
+        fastGet: vi.fn((_local: string, _remote: string, _options: any, cb: (err?: any) => void) => cb(null)),
+        mkdir: vi.fn((_remote: string, cb: (err?: any) => void) => cb(null)),
+        readdir: vi.fn((_remote: string, cb: (err?: any, list?: any[]) => void) => cb(null, [])),
+        on: vi.fn(),
+        end: vi.fn(() => {
+          const cbs = [...activeCallbacks]
+          activeCallbacks.length = 0
+          for (const cb of cbs) {
+            cb(new Error('Channel closed'))
+          }
+        })
+      }
+      callback(null, mockSftp)
+    })
+
+    sftpUpload(mockSession, sendSpy, 't-dir', testTempDir, '/remote/dest')
+
+    // Wait 20ms to allow readdir/traverse walk and task queuing
+    await new Promise(r => setTimeout(r, 20))
+
+    // Check that we have files in the transfer queue
+    const queuedTasks = (transferQueue as any).queue.filter((t: any) => t.sessionId === 'session-1')
+    expect(queuedTasks.length).toBeGreaterThan(0)
+
+    // Attempt to cancel the directory upload
+    sftpCancel('session-1', 't-dir')
+
+    // Check if the queued tasks for this session were cancelled
+    const remainingTasks = (transferQueue as any).queue.filter((t: any) => t.sessionId === 'session-1')
+    console.log(`BUG 2 FIXED CHECK: Cancelled 't-dir'. Remaining queued files count: ${remainingTasks.length}`)
+
+    // Since the bug is fixed, there should be no remaining tasks in the queue for this session.
+    expect(remainingTasks).toHaveLength(0)
+
+    // Clean up remaining tasks manually to avoid hanging tests (should be 0)
+    for (const task of remainingTasks) {
+      sftpCancel('session-1', task.id)
+    }
+  })
 })

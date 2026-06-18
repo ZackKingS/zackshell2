@@ -6,6 +6,7 @@ import type { Session, Sender } from '../sshManager'
 
 export interface TransferTask {
   id: string
+  parentId?: string
   sessionId: string
   client: any
   direction: 'upload' | 'download'
@@ -20,17 +21,183 @@ export interface TransferTask {
   send: Sender
 }
 
+export interface DirectoryTask {
+  sessionId: string
+  id: string
+  direction: 'upload' | 'download'
+  filename: string
+  queuedFileIds: Set<string>
+  completedFileIds: Set<string>
+  failedFileIds: Set<string>
+  cancelledFileIds: Set<string>
+  fileProgresses: Map<string, { transferred: number; total: number; done: boolean }>
+  walkCompleted: boolean
+  send: Sender
+}
+
 class TransferQueueManager {
   private queue: TransferTask[] = []
   private activeCount = 0
   private maxConcurrency = 3
+  private directoryTasks = new Map<string, DirectoryTask>()
+
+  registerDirectoryTask(
+    sessionId: string,
+    transferId: string,
+    direction: 'upload' | 'download',
+    filename: string,
+    send: Sender
+  ) {
+    this.directoryTasks.set(transferId, {
+      sessionId,
+      id: transferId,
+      direction,
+      filename,
+      queuedFileIds: new Set(),
+      completedFileIds: new Set(),
+      failedFileIds: new Set(),
+      cancelledFileIds: new Set(),
+      fileProgresses: new Map(),
+      walkCompleted: false,
+      send
+    })
+  }
+
+  completeDirectoryWalk(parentId: string) {
+    const dirTask = this.directoryTasks.get(parentId)
+    if (dirTask) {
+      dirTask.walkCompleted = true
+      this.checkDirectoryCompletion(parentId)
+    }
+  }
+
+  failDirectoryWalk(parentId: string, errorMsg: string) {
+    const dirTask = this.directoryTasks.get(parentId)
+    if (dirTask) {
+      // Cancel all child tasks that might have been queued
+      const childTasks = this.queue.filter((t) => t.parentId === parentId && t.sessionId === dirTask.sessionId)
+      for (const child of childTasks) {
+        this.cancel(dirTask.sessionId, child.id)
+      }
+      dirTask.walkCompleted = true
+      dirTask.send('sftp:progress', {
+        sessionId: dirTask.sessionId,
+        transferId: dirTask.id,
+        direction: dirTask.direction,
+        filename: dirTask.filename,
+        transferred: 0,
+        total: 0,
+        done: true,
+        error: errorMsg
+      })
+      this.directoryTasks.delete(parentId)
+    }
+  }
+
+  private handleFileEnd(task: TransferTask, status: 'completed' | 'failed' | 'cancelled', _errorMsg?: string) {
+    if (task.parentId) {
+      const dirTask = this.directoryTasks.get(task.parentId)
+      if (dirTask) {
+        dirTask.queuedFileIds.delete(task.id)
+        if (status === 'completed') dirTask.completedFileIds.add(task.id)
+        if (status === 'failed') dirTask.failedFileIds.add(task.id)
+        if (status === 'cancelled') dirTask.cancelledFileIds.add(task.id)
+
+        const fp = dirTask.fileProgresses.get(task.id)
+        if (fp) {
+          fp.done = true
+          if (status === 'completed') {
+            fp.transferred = fp.total
+          }
+        }
+        this.checkDirectoryCompletion(task.parentId)
+      }
+    }
+  }
+
+  private checkDirectoryCompletion(parentId: string) {
+    const dirTask = this.directoryTasks.get(parentId)
+    if (!dirTask) return
+
+    if (dirTask.walkCompleted && dirTask.queuedFileIds.size === 0) {
+      const totalFailed = dirTask.failedFileIds.size
+      const totalCancelled = dirTask.cancelledFileIds.size
+
+      let finalStatus: 'completed' | 'failed' | 'cancelled' = 'completed'
+      let finalError: string | undefined = undefined
+
+      if (totalCancelled > 0) {
+        finalStatus = 'cancelled'
+        finalError = 'Cancelled by user'
+      } else if (totalFailed > 0) {
+        finalStatus = 'failed'
+        finalError = `${totalFailed} files failed to upload`
+      }
+
+      dirTask.send('sftp:progress', {
+        sessionId: dirTask.sessionId,
+        transferId: dirTask.id,
+        direction: dirTask.direction,
+        filename: dirTask.filename,
+        transferred: finalStatus === 'completed' ? -1 : 0,
+        total: finalStatus === 'completed' ? -1 : 0,
+        done: true,
+        error: finalError
+      })
+
+      this.directoryTasks.delete(parentId)
+    } else {
+      this.updateDirectoryProgress(parentId)
+    }
+  }
+
+  private updateDirectoryProgress(parentId: string) {
+    const dirTask = this.directoryTasks.get(parentId)
+    if (!dirTask) return
+
+    let totalTransferred = 0
+    let totalSize = 0
+
+    for (const fp of dirTask.fileProgresses.values()) {
+      totalTransferred += fp.transferred
+      totalSize += fp.total
+    }
+
+    dirTask.send('sftp:progress', {
+      sessionId: dirTask.sessionId,
+      transferId: dirTask.id,
+      direction: dirTask.direction,
+      filename: dirTask.filename,
+      transferred: totalTransferred,
+      total: totalSize,
+      done: false
+    })
+  }
 
   add(task: TransferTask) {
+    if (task.parentId) {
+      const dirTask = this.directoryTasks.get(task.parentId)
+      if (dirTask) {
+        dirTask.queuedFileIds.add(task.id)
+        dirTask.fileProgresses.set(task.id, { transferred: 0, total: 0, done: false })
+      }
+    }
     this.queue.push(task)
     this.schedule()
   }
 
   cancel(sessionId: string, transferId: string) {
+    const dirTask = this.directoryTasks.get(transferId)
+    if (dirTask) {
+      const childTasks = this.queue.filter((t) => t.parentId === transferId && t.sessionId === sessionId)
+      for (const child of childTasks) {
+        this.cancel(sessionId, child.id)
+      }
+      dirTask.walkCompleted = true
+      this.checkDirectoryCompletion(transferId)
+      return
+    }
+
     const task = this.queue.find((t) => t.id === transferId && t.sessionId === sessionId)
     if (!task) return
 
@@ -46,6 +213,7 @@ class TransferQueueManager {
         done: true,
         error: 'Cancelled by user'
       })
+      this.handleFileEnd(task, 'cancelled')
       this.remove(task.id)
     } else if (task.status === 'running') {
       task.status = 'cancelled'
@@ -58,6 +226,11 @@ class TransferQueueManager {
   }
 
   cancelSession(sessionId: string) {
+    for (const [dirId, dirTask] of this.directoryTasks.entries()) {
+      if (dirTask.sessionId === sessionId) {
+        this.cancel(sessionId, dirId)
+      }
+    }
     const sessionTasks = this.queue.filter((t) => t.sessionId === sessionId)
     for (const task of sessionTasks) {
       this.cancel(sessionId, task.id)
@@ -86,6 +259,7 @@ class TransferQueueManager {
         sftp?.end()
         this.activeCount--
         this.remove(task.id)
+        this.handleFileEnd(task, 'cancelled')
         this.schedule()
         return
       }
@@ -103,6 +277,7 @@ class TransferQueueManager {
           done: true,
           error: err.message
         })
+        this.handleFileEnd(task, 'failed', err.message)
         this.activeCount--
         this.remove(task.id)
         this.schedule()
@@ -124,6 +299,17 @@ class TransferQueueManager {
           total,
           done: false
         })
+        if (task.parentId) {
+          const dirTask = this.directoryTasks.get(task.parentId)
+          if (dirTask) {
+            const fp = dirTask.fileProgresses.get(task.id)
+            if (fp) {
+              fp.transferred = transferred
+              fp.total = total
+            }
+            this.updateDirectoryProgress(task.parentId)
+          }
+        }
       }
 
       const callback = (transferErr: any) => {
@@ -148,6 +334,7 @@ class TransferQueueManager {
             done: true,
             error: 'Cancelled by user'
           })
+          this.handleFileEnd(task, 'cancelled')
           this.schedule()
           return
         }
@@ -165,6 +352,7 @@ class TransferQueueManager {
             done: true,
             error: transferErr.message
           })
+          this.handleFileEnd(task, 'failed', transferErr.message)
         } else {
           task.status = 'completed'
           task.send('sftp:progress', {
@@ -176,6 +364,7 @@ class TransferQueueManager {
             total: -1,
             done: true
           })
+          this.handleFileEnd(task, 'completed')
         }
 
         this.schedule()
@@ -321,6 +510,7 @@ export function sftpDownload(
 async function walkDirectoryAndQueue(
   session: Session,
   send: Sender,
+  parentId: string,
   localPath: string,
   remotePath: string
 ): Promise<void> {
@@ -393,6 +583,7 @@ async function walkDirectoryAndQueue(
         logInfo(`[SFTP Upload] Queueing file: ${localItemPath} -> ${remoteItemPath} (ID: ${fileTransferId})`)
         transferQueue.add({
           id: fileTransferId,
+          parentId,
           sessionId: id,
           client: session.client,
           direction: 'upload',
@@ -425,6 +616,8 @@ export function sftpUpload(
   fsPromises.stat(localPath)
     .then((stats) => {
       if (stats.isDirectory()) {
+        transferQueue.registerDirectoryTask(id, transferId, 'upload', filename, send)
+
         send('sftp:progress', {
           sessionId: id,
           transferId,
@@ -435,29 +628,12 @@ export function sftpUpload(
           done: false
         })
 
-        walkDirectoryAndQueue(session, send, localPath, remotePath)
+        walkDirectoryAndQueue(session, send, transferId, localPath, remotePath)
           .then(() => {
-            send('sftp:progress', {
-              sessionId: id,
-              transferId,
-              direction: 'upload',
-              filename,
-              transferred: -1,
-              total: -1,
-              done: true
-            })
+            transferQueue.completeDirectoryWalk(transferId)
           })
           .catch((err) => {
-            send('sftp:progress', {
-              sessionId: id,
-              transferId,
-              direction: 'upload',
-              filename,
-              transferred: 0,
-              total: 0,
-              done: true,
-              error: err.message
-            })
+            transferQueue.failDirectoryWalk(transferId, err.message)
           })
       } else {
         transferQueue.add({
