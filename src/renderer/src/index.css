@@ -264,19 +264,19 @@ button {
   color: var(--text);
 }
 
-/* ---------- Monitor (light, FinalShell-style) ---------- */
+/* ---------- Monitor (dark, FinalShell-style) ---------- */
 .monitor {
   width: 268px;
   flex-shrink: 0;
-  background: #f4f5f7;
-  color: #333;
-  border-right: 1px solid #c9ccd1;
+  background: var(--panel);
+  color: var(--text);
+  border-right: 1px solid var(--border);
   padding: 8px 10px;
   overflow-y: auto;
   font-size: 12px;
 }
 .monitor-empty {
-  color: #888;
+  color: var(--text-dim);
   padding: 20px 4px;
   text-align: center;
 }
@@ -289,32 +289,37 @@ button {
 }
 .fs-ip b {
   font-weight: 600;
+  color: #fff;
 }
 .fs-copy {
-  color: #3a7bd5;
+  color: #6fb1d6;
   cursor: pointer;
   font-size: 11px;
+  transition: color 0.15s;
 }
 .fs-copy:hover {
+  color: #8cc3e3;
   text-decoration: underline;
 }
 
 .fs-sysbtn {
   width: 100%;
-  background: linear-gradient(#fdfdfd, #eef0f2);
-  border: 1px solid #c4c7cc;
-  border-radius: 3px;
-  color: #333;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
   padding: 5px 0;
   font-size: 12px;
   margin-bottom: 8px;
+  transition: background 0.15s, border-color 0.15s;
 }
 .fs-sysbtn:hover {
-  background: linear-gradient(#ffffff, #e6e8ea);
+  background: var(--border);
+  border-color: var(--text-dim);
 }
 
 .fs-meta {
-  color: #555;
+  color: var(--text-dim);
   line-height: 1.7;
   margin-bottom: 8px;
 }
@@ -327,15 +332,15 @@ button {
 }
 .fs-gauge .g-label {
   width: 32px;
-  color: #555;
+  color: var(--text-dim);
   flex-shrink: 0;
 }
 .fs-gauge .g-bar {
   position: relative;
   flex: 1;
   height: 16px;
-  background: #e4e6e9;
-  border: 1px solid #d2d5d9;
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -347,14 +352,15 @@ button {
   position: absolute;
   left: 5px;
   top: 0;
-  line-height: 16px;
+  line-height: 14px;
   font-size: 11px;
-  color: #4a4a4a;
+  color: #fff;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
 }
 .fs-gauge .g-value {
   width: 86px;
   text-align: right;
-  color: #888;
+  color: var(--text-dim);
   flex-shrink: 0;
 }
 
@@ -366,11 +372,12 @@ button {
   font-size: 11px;
 }
 .fs-proc thead th {
-  background: #4a90d9;
-  color: #fff;
+  background: var(--bg-3);
+  color: var(--text);
   font-weight: 600;
   text-align: left;
-  padding: 3px 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
 }
 .fs-proc thead th:first-child {
   width: 52px;
@@ -379,12 +386,12 @@ button {
   width: 34px;
 }
 .fs-proc tbody td {
-  padding: 2px 6px;
-  border-bottom: 1px solid #e3e5e8;
-  color: #444;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
 }
 .fs-proc tbody tr:nth-child(even) {
-  background: #eceef1;
+  background: var(--bg-2);
 }
 .fs-proc td.cmd {
   white-space: nowrap;
@@ -403,23 +410,31 @@ button {
   margin-top: 4px;
 }
 .fs-net-head .up {
-  color: #d05a5a;
+  color: var(--danger);
 }
 .fs-net-head .down {
-  color: #3f9a3f;
+  color: var(--accent);
 }
 .fs-net-head select {
   margin-left: auto;
-  background: #fff;
-  border: 1px solid #c4c7cc;
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 3px;
   font-size: 11px;
-  color: #333;
+  color: var(--text);
   padding: 1px 2px;
+  outline: none;
+}
+.fs-net-head select option {
+  background: var(--bg);
+  color: var(--text);
+}
+.fs-net-head select:focus {
+  border-color: var(--accent);
 }
 .fs-ping-head .muted {
   margin-left: auto;
-  color: #3a7bd5;
+  color: #6fb1d6;
 }
 
 .fs-graph {
@@ -433,14 +448,14 @@ button {
   justify-content: space-between;
   width: 42px;
   font-size: 10px;
-  color: #999;
+  color: var(--text-dim);
   text-align: right;
 }
 .fs-svg {
   flex: 1;
   height: 58px;
-  background: #fafbfc;
-  border: 1px solid #e3e5e8;
+  background: var(--bg);
+  border: 1px solid var(--border);
 }
 
 /* disk table */
@@ -451,21 +466,21 @@ button {
   font-size: 11px;
 }
 .fs-disk thead th {
-  background: #eceef1;
-  color: #555;
+  background: var(--bg-3);
+  color: var(--text-dim);
   font-weight: 600;
   text-align: left;
   padding: 4px 6px;
-  border-bottom: 1px solid #d2d5d9;
+  border-bottom: 1px solid var(--border);
 }
 .fs-disk th.r,
 .fs-disk td.r {
   text-align: right;
 }
 .fs-disk tbody td {
-  padding: 3px 6px;
-  border-bottom: 1px solid #e3e5e8;
-  color: #444;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
 }
 .fs-disk td.mount {
   white-space: nowrap;
@@ -477,22 +492,23 @@ button {
   white-space: nowrap;
 }
 .fs-disk .size {
-  color: #666;
+  color: var(--text-dim);
   margin-right: 4px;
 }
 .fs-disk .usebar {
   display: inline-block;
   width: 36px;
   height: 7px;
-  background: #e4e6e9;
-  border: 1px solid #d2d5d9;
+  background: var(--bg);
+  border: 1px solid var(--border);
   vertical-align: middle;
   overflow: hidden;
+  border-radius: 1px;
 }
 .fs-disk .usefill {
   display: block;
   height: 100%;
-  background: #7ec97e;
+  background: var(--accent);
 }
 
 /* sysinfo modal */
